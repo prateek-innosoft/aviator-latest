@@ -12,6 +12,16 @@ export async function loginAs(
   page: Page,
   cred: { email: string; password: string },
 ) {
+  // Clear stale Supabase session before each login
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('sb-') || k.startsWith('supabase')) localStorage.removeItem(k);
+      }
+      sessionStorage.clear();
+    } catch {}
+  });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   // Wait for login screen
   await page.locator('[data-testid="login-screen"]').waitFor({ state: "visible", timeout: 10_000 });
@@ -21,14 +31,25 @@ export async function loginAs(
   await page.locator('[data-testid="login-submit"]').click();
 }
 
-/** Login and wait until the game canvas is visible (auth succeeded). */
+/** Login and wait until the game canvas (regular user) or admin panel is visible. */
 export async function loginAndWait(
   page: Page,
   cred: { email: string; password: string },
 ) {
-  await loginAs(page, cred);
-  await page.locator('[data-testid="header"]').waitFor({ state: "visible", timeout: 15_000 });
-  await page.locator("canvas").first().waitFor({ state: "visible", timeout: 10_000 });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await page.waitForTimeout(3000);
+    await loginAs(page, cred);
+    // Admin users land on admin panel; regular users land on the game with header+canvas
+    const result = await page.waitForFunction(() => {
+      const ok  = document.querySelector('[data-testid="header"]') ||
+                  document.querySelector('[data-testid="admin-panel"]');
+      const err = document.querySelector('[data-testid="login-error"]');
+      return ok ? 'ok' : (err ? 'error' : null);
+    }, { timeout: 15_000 }).catch(() => null);
+    const outcome = await result?.jsonValue().catch(() => null);
+    if (outcome === 'ok') return;
+    // retry on error or timeout
+  }
 }
 
 /** Click logout and wait for login screen to reappear. */

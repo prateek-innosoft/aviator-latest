@@ -5,14 +5,36 @@ import { sel, type GamePhase } from "./selectors";
 const TEST_EMAIL    = "player1@aviator.local";
 const TEST_PASSWORD = "Player1@2026!";
 
-/** Auto-login if login screen is shown, then wait for header + canvas. */
+/** Auto-login if login screen is shown, then wait for header + canvas. Retries on auth errors. */
 async function ensureLoggedIn(page: Page) {
-  const loginScreen = page.locator('[data-testid="login-screen"]');
-  const isLogin = await loginScreen.isVisible().catch(() => false);
-  if (isLogin) {
-    await page.locator('[data-testid="login-email"]').fill(TEST_EMAIL);
-    await page.locator('[data-testid="login-password"]').fill(TEST_PASSWORD);
-    await page.locator('[data-testid="login-submit"]').click();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await page.waitForTimeout(3000);
+
+    const loginScreen = page.locator('[data-testid="login-screen"]');
+    const isLogin = await loginScreen.isVisible().catch(() => false);
+    if (isLogin) {
+      await page.locator('[data-testid="login-email"]').fill(TEST_EMAIL);
+      await page.locator('[data-testid="login-password"]').fill(TEST_PASSWORD);
+      await page.locator('[data-testid="login-submit"]').click();
+    }
+
+    // Wait for success OR an auth error we can retry
+    const result = await page.waitForFunction(() => {
+      const ok  = document.querySelector('[data-testid="header"]');
+      const err = document.querySelector('[data-testid="login-error"]');
+      return ok ? 'ok' : (err ? 'error' : null);
+    }, { timeout: 15_000 }).catch(() => null);
+    const outcome = await result?.jsonValue().catch(() => null);
+    if (outcome === 'ok') break;
+    // On error, clear storage and retry
+    await page.evaluate(() => {
+      try {
+        for (const k of Object.keys(localStorage)) {
+          if (k.startsWith('sb-') || k.startsWith('supabase')) localStorage.removeItem(k);
+        }
+      } catch {}
+    });
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
   }
   await page.locator(sel.header).waitFor({ state: "visible", timeout: 15_000 });
   await page.locator(sel.gameCanvas).first().waitFor({ state: "visible", timeout: 10_000 });
@@ -21,6 +43,16 @@ async function ensureLoggedIn(page: Page) {
 // ─── Navigation ────────────────────────────────────────────────────────────
 
 export async function gotoApp(page: Page) {
+  // Clear stale Supabase session before navigating so login screen always appears
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    try {
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith('sb-') || k.startsWith('supabase')) localStorage.removeItem(k);
+      }
+      sessionStorage.clear();
+    } catch {}
+  });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await ensureLoggedIn(page);
 }

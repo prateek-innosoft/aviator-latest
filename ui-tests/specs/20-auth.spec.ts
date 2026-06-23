@@ -46,11 +46,12 @@ test("header shows player username after login", async ({ page }) => {
   await expect(header).toContainText(/player1|Player One/i);
 });
 
-// ── 6. Admin role badge shown for admin user ────────────────────────────────
+// ── 6. Admin user lands on admin panel (not the game) ──────────────────────
 test("admin role badge shown for admin login", async ({ page }) => {
   await loginAndWait(page, CREDS.admin);
-  const header = page.locator('[data-testid="header"]');
-  await expect(header).toContainText(/admin|superadmin/i);
+  // Admin users see the admin panel, not the regular game UI
+  const adminPanel = page.locator('[data-testid="admin-panel"]');
+  await expect(adminPanel).toBeVisible({ timeout: 5000 });
 });
 
 // ── 7. Logout returns to login screen ───────────────────────────────────────

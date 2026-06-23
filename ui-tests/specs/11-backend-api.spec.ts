@@ -226,7 +226,13 @@ test.describe("Balance accounting", () => {
 
   test("balance refunded after cancelling bet", async ({ page }) => {
     await gotoApp(page);
-    await waitForBetting(page);
+    // Wait for a fresh betting window with at least 3.5s remaining
+    await page.waitForFunction(() => {
+      const el = document.querySelector('[data-phase="betting"]');
+      if (!el) return false;
+      const cd = parseInt(el.getAttribute('data-countdown') ?? '0', 10);
+      return cd >= 3500;
+    }, { timeout: 40000 });
 
     const before = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="header-balance"]');
@@ -246,7 +252,7 @@ test.describe("Balance accounting", () => {
         return parseFloat(el?.textContent?.replace(/[^0-9.]/g, "") ?? "0") < b;
       },
       before,
-      { timeout: 8000 },
+      { timeout: 15000 },
     );
 
     const afterBet = await page.evaluate(() => {

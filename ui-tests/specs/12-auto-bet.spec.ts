@@ -148,6 +148,7 @@ test.describe("Auto-bet mode", () => {
         const el = document.querySelector('[data-phase="flying"] .tabular-nums');
         return parseFloat(el?.textContent ?? "0") > 1.5;
       },
+      undefined,
       { timeout: 90_000 },
     );
     await switchPanelMode(page, 0, "auto");

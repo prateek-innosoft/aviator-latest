@@ -275,6 +275,7 @@ io.on("connection", (socket) => {
 
   socket.on("bet:cancelWithAmount", async (payload: CancelBetPayload) => {
     const { panel, amount, userId } = payload;
+    console.log(`[bet:cancelWithAmount] userId=${userId} panel=${panel} roundId=${engine.supabaseRoundId} phase=${engine.phase}`);
 
     if (userId && engine.supabaseRoundId) {
       // Authenticated path: use Supabase wallet RPC.
@@ -284,6 +285,7 @@ io.on("connection", (socket) => {
         p_panel: panel,
         p_reference: socket.id,
       });
+      console.log(`[bet:cancelWithAmount] RPC result:`, JSON.stringify(data), `error:`, error?.message);
       if (error) {
         socket.emit("bet:cancel_failed", { panel, reason: "server_error" });
         return;

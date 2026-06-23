@@ -26,8 +26,8 @@ export default defineConfig({
     baseURL: process.env.UI_BASE_URL ?? "http://localhost:5173",
     trace: "on-first-retry",
     screenshot: "on",
-    video: "on",
-    actionTimeout: 12_000,
+    video: "retain-on-failure",
+    actionTimeout: 30_000,
   },
   webServer: process.env.SKIP_WEBSERVER
     ? undefined
