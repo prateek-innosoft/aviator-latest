@@ -276,6 +276,7 @@ export function GameCanvas() {
     <div
       ref={wrapRef}
       data-phase={phase}
+      data-countdown={countdown}
       className="relative aspect-[1.78/1] w-full overflow-hidden rounded-[22px] border border-[#2a2b2f] bg-[#050606] md:aspect-auto md:min-h-0 md:flex-1"
       style={{
         background: "#050606",

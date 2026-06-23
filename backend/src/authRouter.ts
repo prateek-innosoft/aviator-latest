@@ -18,7 +18,7 @@ export const authRouter = Router();
 // ── Rate limiters ──────────────────────────────────────────────────────────
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 min window
-  max: 10,                   // 10 attempts per IP per window
+  max: 50,                   // 50 attempts per IP per window
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, reason: "too_many_attempts" },

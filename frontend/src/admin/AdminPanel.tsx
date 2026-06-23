@@ -4,5 +4,9 @@ import { RateControlPanel } from "./RateControlPanel";
 export function AdminPanel() {
   const { session } = useAuth();
   const token = session?.access_token ?? "";
-  return <RateControlPanel token={token} />;
+  return (
+    <div data-testid="admin-panel">
+      <RateControlPanel token={token} />
+    </div>
+  );
 }
