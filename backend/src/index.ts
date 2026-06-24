@@ -55,7 +55,7 @@ app.use("/api", globalLimiter);
 
 // Auth routes
 app.use("/api/auth", authRouter);
-app.use("/api", authRouter); // also mounts /api/admin/users
+app.use("/api", authRouter); // also mounts /api/admin/controls + /api/admin/stats
 
 const server = http.createServer(app);
 const io = new Server(server, {
