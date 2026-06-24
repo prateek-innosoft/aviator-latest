@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Logo } from "../assets/Logo";
-import { Plane } from "../assets/plane";
 
 /**
  * Branded Aviator loading screen.
@@ -25,18 +24,9 @@ export function LoadingScreen({ done }: { done: boolean }) {
         done ? "opacity-0" : "opacity-100"
       }`}
     >
-      {/* Spinning plane + logo */}
+      {/* Logo */}
       <div className="relative flex flex-col items-center">
-        {/* Plane with propeller spin */}
-        <div
-          className="mb-6 h-20 w-20"
-          style={{ animation: "propeller-spin 1.4s linear infinite" }}
-        >
-          <Plane />
-        </div>
-
-        {/* Aviator wordmark */}
-        <Logo className="h-[34px]" />
+        <Logo className="h-[120px] w-auto" />
 
         {/* Loading bar */}
         <div className="mt-8 h-[3px] w-[180px] overflow-hidden rounded-full bg-[#1b1c20]">
@@ -54,16 +44,6 @@ export function LoadingScreen({ done }: { done: boolean }) {
           <span className="loading-dot">.</span>
           <span className="loading-dot" style={{ animationDelay: "0.2s" }}>.</span>
           <span className="loading-dot" style={{ animationDelay: "0.4s" }}>.</span>
-        </div>
-      </div>
-
-      {/* Footer branding */}
-      <div className="absolute bottom-8 flex flex-col items-center gap-1">
-        <div className="flex items-center gap-1.5 text-[11px] text-white/25">
-          <span>Provably Fair Game</span>
-        </div>
-        <div className="text-[11px] text-white/20">
-          Powered by <span className="font-bold text-white/35">SPRIBE</span>
         </div>
       </div>
     </div>

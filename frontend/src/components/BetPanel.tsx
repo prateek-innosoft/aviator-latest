@@ -3,7 +3,8 @@ import { gsap } from "gsap";
 import { useGame } from "../store/gameStore";
 import { fmt } from "../lib/format";
 
-const CHIPS = [10, 20, 50, 100];
+/** Fixed quick-pick amounts — enabled only when ≥ admin min bet. */
+const BET_PRESETS = [10, 20, 50, 100];
 
 export function BetPanel({
   index,
@@ -44,13 +45,19 @@ export function BetPanel({
   };
 
   const commitAco = () => {
-    const v = parseFloat(acoDraft ?? "");
+    if (acoDraft === null) return;
+    const v = parseFloat(acoDraft);
     setPanel(index, {
       autoCashOutValue: Number.isNaN(v)
         ? panel.autoCashOutValue
-        : Math.max(1.01, Math.round(v * 100) / 100),
+        : Math.max(1.01, Math.min(999.99, Math.round(v * 100) / 100)),
     });
     setAcoDraft(null);
+  };
+
+  const setAutoCashOut = (enabled: boolean) => {
+    commitAco();
+    setPanel(index, { autoCashOut: enabled });
   };
 
   const clamp = (v: number) => Math.max(betLimits.minBet, Math.min(betLimits.maxBet, Math.round(v * 100) / 100));
@@ -88,6 +95,7 @@ export function BetPanel({
   const autoLocked = panel.mode === "auto" && panel.autoBet;
 
   const onAction = () => {
+    if (panel.mode === "auto") commitAco();
     if (action === "bet") {
       if (insufficient || autoLocked) return;
       gsap.fromTo(
@@ -191,15 +199,29 @@ export function BetPanel({
             </button>
           </div>
           <div className="grid grid-cols-2 gap-1.5">
-            {CHIPS.map((c) => (
-              <button
-                key={c}
-                onClick={() => setAmount(c)}
-                className="rounded-full bg-[#0f1112] py-1 text-[12px] font-medium text-white/48 transition hover:bg-[#26272b] hover:text-white max-[380px]:text-[11px]"
-              >
-                {c}
-              </button>
-            ))}
+            {BET_PRESETS.map((c) => {
+              const belowMin = c < betLimits.minBet;
+              const aboveMax = c > betLimits.maxBet;
+              const chipDisabled = belowMin || aboveMax;
+              const selected = !chipDisabled && Math.abs(panel.amount - c) < 0.01;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  disabled={chipDisabled}
+                  onClick={() => !chipDisabled && setAmount(c)}
+                  className={`rounded-full py-1 text-[12px] font-medium transition max-[380px]:text-[11px] ${
+                    chipDisabled
+                      ? "cursor-not-allowed bg-[#0a0b0c] text-white/18"
+                      : selected
+                        ? "bg-[#2c2d30] text-white ring-1 ring-white/25"
+                        : "bg-[#0f1112] text-white/48 hover:bg-[#26272b] hover:text-white"
+                  }`}
+                >
+                  {c}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -277,6 +299,7 @@ export function BetPanel({
               label="Auto bet"
               on={panel.autoBet}
               onChange={(v) => {
+                commitAco();
                 setPanel(index, { autoBet: v });
                 if (
                   v &&
@@ -295,7 +318,7 @@ export function BetPanel({
             <Toggle
               label="Auto cash out"
               on={panel.autoCashOut}
-              onChange={(v) => setPanel(index, { autoCashOut: v })}
+              onChange={setAutoCashOut}
             />
             <div
               className={`flex items-center gap-1 rounded-full px-2 py-1 transition ${
@@ -305,20 +328,23 @@ export function BetPanel({
               <input
                 value={acoDraft ?? panel.autoCashOutValue.toFixed(2)}
                 disabled={!panel.autoCashOut}
+                onFocus={() => setAcoDraft(panel.autoCashOutValue.toFixed(2))}
                 onChange={(e) => setAcoDraft(sanitizeDecimal(e.target.value))}
                 onBlur={commitAco}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                 }}
                 inputMode="decimal"
-                className="w-11 bg-transparent text-right text-[12px] font-bold text-white outline-none disabled:cursor-not-allowed"
+                className="w-14 bg-transparent text-right text-[12px] font-bold text-white outline-none disabled:cursor-not-allowed"
               />
               <button
-                onClick={() =>
-                  setPanel(index, { autoCashOut: false, autoCashOutValue: 1.1 })
-                }
+                type="button"
+                onClick={() => {
+                  setAcoDraft(null);
+                  setPanel(index, { autoCashOutValue: 2.0 });
+                }}
                 disabled={!panel.autoCashOut}
-                aria-label="Clear auto cash out"
+                aria-label="Reset auto cash out multiplier"
                 className="flex h-4 w-4 items-center justify-center text-white/40 transition hover:text-white disabled:opacity-30"
               >
                 <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none">

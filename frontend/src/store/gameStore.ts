@@ -57,7 +57,8 @@ function defaultPanel(amount: number): PanelState {
     win: null,
     autoBet: false,
     autoCashOut: false,
-    autoCashOutValue: 1.1,
+    autoCashOutValue: 2.0,
+    cashOutPending: false,
     betIsAuthenticated: false,
   };
 }
@@ -143,11 +144,13 @@ export const useGame = create<GameState>((set, get) => ({
   cashOut: (panel) => {
     const s = get();
     const p = s.panels[panel];
-    if (!p.active || p.cashedOut) return;
+    if (!p.active || p.cashedOut || p.cashOutPending) return;
+    if (s.phase !== "flying") return;
     const userId = s.userId;
     // Only send userId if the bet was PLACED as authenticated — prevents
     // the backend trying to find a DB bet that doesn't exist.
     const isAuth = p.betIsAuthenticated && !!userId;
+    get().setPanel(panel, { cashOutPending: true });
     socket.emit("bet:cashout", { panel, ...(isAuth ? { userId } : {}) });
   },
 
@@ -202,6 +205,7 @@ export const useGame = create<GameState>((set, get) => ({
           cashedOut: false,
           cashedOutAt: null,
           win: null,
+          cashOutPending: false,
           betIsAuthenticated: false,
         })) as [PanelState, PanelState];
         return {
@@ -256,12 +260,15 @@ export const useGame = create<GameState>((set, get) => ({
       (p: { multiplier: number; bets: LiveBet[] }) => {
         set({ multiplier: p.multiplier, bets: p.bets });
 
-        // Auto cash-out handling.
+        // Auto cash-out handling (auto tab only, once per round).
         const s = get();
+        if (s.phase !== "flying") return;
         s.panels.forEach((panel, i) => {
           if (
+            panel.mode === "auto" &&
             panel.active &&
             !panel.cashedOut &&
+            !panel.cashOutPending &&
             panel.autoCashOut &&
             p.multiplier >= panel.autoCashOutValue
           ) {
@@ -282,6 +289,7 @@ export const useGame = create<GameState>((set, get) => ({
           const panels = s.panels.map((panel) => ({
             ...panel,
             active: false,
+            cashOutPending: false,
           })) as [PanelState, PanelState];
           return {
             phase: "crashed",
@@ -364,6 +372,7 @@ export const useGame = create<GameState>((set, get) => ({
           cashedOutAt: p.multiplier,
           win: p.win,
           active: false,
+          cashOutPending: false,
         });
         set({
           lastWinToast: {

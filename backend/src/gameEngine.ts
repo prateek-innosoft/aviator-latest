@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { crashPointFromSeed, generateSeed } from "./provablyFair.js";
 import { generateBots } from "./fakeBets.js";
 import { supabase } from "./supabaseClient.js";
+import { loadAdminControls as fetchAdminControls, applyControlsToEngine } from "./adminControls.js";
 import type {
   GamePhase,
   LiveBet,
@@ -141,24 +142,14 @@ export class GameEngine extends EventEmitter {
     }
   }
 
-  /** Load admin_controls from DB and apply to overrides. */
+  /** Load admin controls from DB and apply to overrides. */
   async loadAdminControls() {
     try {
-      const { data, error } = await supabase
-        .from("admin_controls")
-        .select("win_mode, min_bet, max_bet, forced_crash, next_crash_point")
-        .eq("id", 1)
-        .single();
-      if (error || !data) {
-        console.warn("[GameEngine] Failed to load admin controls:", error?.message);
-        return;
-      }
-      this.overrides.winMode        = (data.win_mode as WinMode) ?? "normal";
-      this.overrides.minBet         = typeof data.min_bet === "number" ? data.min_bet : 1;
-      this.overrides.maxBet         = typeof data.max_bet === "number" ? data.max_bet : 50000;
-      this.overrides.forcedCrash    = (data.forced_crash as number | null) ?? null;
-      this.overrides.nextCrashPoint = (data.next_crash_point as number | null) ?? null;
-      console.log(`[GameEngine] Loaded admin controls: winMode=${this.overrides.winMode}`);
+      const controls = await fetchAdminControls();
+      applyControlsToEngine(this, controls);
+      console.log(
+        `[GameEngine] Admin controls loaded: winMode=${controls.win_mode} min=${controls.min_bet} max=${controls.max_bet}`,
+      );
     } catch (err) {
       console.warn("[GameEngine] Exception loading admin controls:", err);
     }
@@ -184,7 +175,7 @@ export class GameEngine extends EventEmitter {
     this.crashPoint = this.computeCrashPoint();
 
     this.playerBets = [];
-    this.bots = generateBots(60 + Math.floor(Math.random() * 120));
+    this.bots = generateBots(180 + Math.floor(Math.random() * 80));
 
     // Persist the new round to Supabase (commit to hashed seed before revealing).
     try {

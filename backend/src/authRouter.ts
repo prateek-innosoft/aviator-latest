@@ -3,6 +3,11 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import crypto from "node:crypto";
 import { supabase } from "./supabaseClient.js";
+import {
+  loadAdminControls,
+  saveAdminControls,
+  applyControlsToEngine,
+} from "./adminControls.js";
 import type { GameEngine } from "./gameEngine.js";
 
 declare global {
@@ -198,35 +203,20 @@ authRouter.get(
   adminLimiter,
   requireAdmin,
   async (_req: Request, res: Response) => {
-    // Read from the config key-value table (best-effort).
-    const cfg: Record<string, number> = {};
-    try {
-      const { data, error } = await supabase
-        .from("config")
-        .select("key, value")
-        .in("key", ["min_bet", "max_bet"]);
-      if (!error && data) {
-        for (const row of data) cfg[row.key] = Number(row.value);
-      }
-    } catch { /* Supabase unreachable — use defaults */ }
-
-    // Read current in-memory win mode from the game engine
-    const engine = globalThis.__gameEngine;
-    const currentWinMode = engine?.overrides.winMode ?? "normal";
-
+    const controls = await loadAdminControls();
     res.json({
       ok: true,
       controls: {
-        id: 1,
-        min_bet:          cfg.min_bet ?? engine?.overrides.minBet ?? 1,
-        max_bet:          cfg.max_bet ?? engine?.overrides.maxBet ?? 50000,
-        next_crash_point: engine?.overrides.nextCrashPoint ?? null,
-        win_mode:         currentWinMode,
-        forced_crash:     engine?.overrides.forcedCrash ?? null,
-        updated_at:       new Date().toISOString(),
+        id:               controls.id,
+        min_bet:          controls.min_bet,
+        max_bet:          controls.max_bet,
+        next_crash_point: controls.next_crash_point,
+        win_mode:         controls.win_mode,
+        forced_crash:     controls.forced_crash,
+        updated_at:       controls.updated_at,
       },
     });
-  }
+  },
 );
 
 // ── PATCH /api/admin/controls ─────────────────────────────────────────────
@@ -235,57 +225,56 @@ authRouter.patch(
   adminLimiter,
   requireAdmin,
   async (req: Request, res: Response) => {
-    const ControlsSchema = z.object({
-      min_bet:           z.number().min(0.01).max(1_000_000).optional(),
-      max_bet:           z.number().min(1).max(10_000_000).optional(),
-      next_crash_point:  z.number().min(1.01).max(130).nullable().optional(),
-      win_mode:          z.enum(["normal", "win", "loss"]).optional(),
-      forced_crash:      z.number().min(1.01).max(130).nullable().optional(),
-    });
+    const ControlsSchema = z
+      .object({
+        min_bet:          z.coerce.number().min(0.01).max(1_000_000).optional(),
+        max_bet:          z.coerce.number().min(1).max(10_000_000).optional(),
+        next_crash_point: z.coerce.number().min(1.01).max(130).nullable().optional(),
+        win_mode:         z.enum(["normal", "win", "loss"]).optional(),
+        forced_crash:     z.coerce.number().min(1.01).max(130).nullable().optional(),
+      })
+      .refine(
+        (d) => d.min_bet === undefined || d.max_bet === undefined || d.min_bet <= d.max_bet,
+        { message: "min_bet cannot exceed max_bet", path: ["min_bet"] },
+      );
     const parse = ControlsSchema.safeParse(req.body);
     if (!parse.success) {
       res.status(400).json({ ok: false, reason: "validation", errors: parse.error.flatten() });
       return;
     }
 
-    // Update config key-value rows for the fields we support.
-    const updates: { key: string; value: number }[] = [];
-    if (parse.data.min_bet    !== undefined) updates.push({ key: "min_bet",    value: parse.data.min_bet });
-    if (parse.data.max_bet    !== undefined) updates.push({ key: "max_bet",    value: parse.data.max_bet });
-
-    for (const u of updates) {
-      const { error } = await supabase.from("config").update({ value: u.value, updated_at: new Date().toISOString() }).eq("key", u.key);
-      if (error) console.warn("[admin] config update failed for key=%s: %s", u.key, error.message);
+    const adminEmail = (req as AuthedRequest).user?.email ?? "admin";
+    const saved = await saveAdminControls(parse.data, adminEmail);
+    if (!saved.ok) {
+      res.status(500).json({ ok: false, reason: saved.reason });
+      return;
     }
 
-    // Notify game engine of updated controls via global event emitter
-    if (globalThis.__gameEngine) {
-      if (parse.data.next_crash_point !== undefined) {
-        globalThis.__gameEngine.setNextCrashOverride(parse.data.next_crash_point);
-      }
-      if (parse.data.win_mode !== undefined) {
-        globalThis.__gameEngine.setWinMode(parse.data.win_mode);
-      }
-      if (parse.data.forced_crash !== undefined) {
-        globalThis.__gameEngine.setForcedCrash(parse.data.forced_crash);
-      }
-      if (parse.data.min_bet !== undefined || parse.data.max_bet !== undefined) {
-        globalThis.__gameEngine.setBetLimits(
-          parse.data.min_bet ?? undefined,
-          parse.data.max_bet ?? undefined,
-        );
-        // Broadcast new bet limits to all connected clients
-        const io = globalThis.__io;
-        if (io) {
-          io.emit("betLimits:update", {
-            minBet: globalThis.__gameEngine.overrides.minBet,
-            maxBet: globalThis.__gameEngine.overrides.maxBet,
-          });
-        }
+    const engine = globalThis.__gameEngine;
+    if (engine) {
+      applyControlsToEngine(engine, saved.controls);
+      const io = globalThis.__io;
+      if (io) {
+        io.emit("betLimits:update", {
+          minBet: saved.controls.min_bet,
+          maxBet: saved.controls.max_bet,
+        });
       }
     }
-    res.json({ ok: true });
-  }
+
+    res.json({
+      ok: true,
+      controls: {
+        id:               saved.controls.id,
+        min_bet:          saved.controls.min_bet,
+        max_bet:          saved.controls.max_bet,
+        next_crash_point: saved.controls.next_crash_point,
+        win_mode:         saved.controls.win_mode,
+        forced_crash:     saved.controls.forced_crash,
+        updated_at:       saved.controls.updated_at,
+      },
+    });
+  },
 );
 
 // ── GET /api/admin/stats ───────────────────────────────────────────────────

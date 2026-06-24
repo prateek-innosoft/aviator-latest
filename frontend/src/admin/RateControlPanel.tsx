@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { LogOut, RefreshCw, Check, ChevronUp, ChevronDown } from "lucide-react";
 import { useAuth } from "../lib/authContext";
-import { adminApi, type AdminControls } from "./api";
+import { adminApi } from "./api";
 import { useGame } from "../store/gameStore";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +117,12 @@ function NumStepper({ label, value, onChange, min = 1, max = 100, step = 1, suff
           <ChevronDown className="h-3.5 w-3.5" />
         </button>
         <div className="flex flex-1 items-center justify-center gap-0.5">
-          <input type="number" value={value} min={min} max={max} step={step} onChange={e => onChange(e.target.value)}
+          <input type="number" value={value} min={min} max={max} step={step}
+            onChange={e => onChange(e.target.value)}
+            onBlur={() => {
+              const n = Number(value);
+              if (value === "" || !Number.isFinite(n)) onChange(String(min));
+            }}
             className="w-full bg-transparent text-center text-[15px] font-bold text-gray-800 outline-none tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
           <span className="text-[11px] font-semibold text-gray-400">{suffix}</span>
         </div>
@@ -215,15 +220,20 @@ export function RateControlPanel({ token }: { token: string }) {
   useEffect(() => { load(); }, [load]);
 
   const commit = useCallback(async (mode: 0 | 50 | 100, minB: string, maxB: string) => {
+    const min = Number(minB);
+    const max = Number(maxB);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+    if (min < 0.01 || max < 1) return;
+    if (min > max) return;
+
     setSaving(true);
     try {
       const win_mode = mode === 100 ? "win" : mode === 0 ? "loss" : "normal";
-      const patch: Partial<AdminControls> = {
-        win_mode:   win_mode as "normal" | "win" | "loss",
-        min_bet:    Number(minB),
-        max_bet:    Number(maxB),
-      };
-      await adminApi.patchControls(token, patch);
+      await adminApi.patchControls(token, {
+        win_mode,
+        min_bet: Math.round(min * 100) / 100,
+        max_bet: Math.round(max * 100) / 100,
+      });
       setSaved(true);
       setTimeout(() => setSaved(false), 1200);
     } catch (e: unknown) {
@@ -234,6 +244,10 @@ export function RateControlPanel({ token }: { token: string }) {
   }, [token]);
 
   const schedule = (mode: 0 | 50 | 100, minB: string, maxB: string) => {
+    const min = Number(minB);
+    const max = Number(maxB);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+    if (min < 0.01 || max < 1 || min > max) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => commit(mode, minB, maxB), 600);
   };

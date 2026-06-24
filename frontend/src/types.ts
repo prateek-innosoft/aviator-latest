@@ -43,6 +43,8 @@ export interface PanelState {
   autoBet: boolean;
   autoCashOut: boolean;
   autoCashOutValue: number;
+  /** Prevents duplicate cash-out emits while waiting for server ack. */
+  cashOutPending: boolean;
   /** True when the active bet was placed via the authenticated (DB) path. */
   betIsAuthenticated: boolean;
 }

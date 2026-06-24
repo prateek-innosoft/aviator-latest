@@ -4,6 +4,7 @@ import { Avatar } from "./Avatar";
 import { fmt, multTier } from "../lib/format";
 import { Footer } from "./Footer";
 import type { LiveBet } from "../types";
+import { PLAYER_POOL } from "../data/playerPool";
 
 const tabs = ["All Bets", "Previous", "Top"] as const;
 const topMetricTabs = ["X", "Win", "Rounds"] as const;
@@ -27,89 +28,21 @@ function seeded(str: string, salt = 0): number {
   return x - Math.floor(x);
 }
 
-/* ── Static pool of 60 realistic players ─────────────────────────────────── */
-const PLAYER_POOL = [
-  { name: "Lethabo_M",    avatar: 0  },
-  { name: "ThaboK",       avatar: 1  },
-  { name: "Sipho99",      avatar: 2  },
-  { name: "NomvulaZ",     avatar: 3  },
-  { name: "lucky_strike", avatar: 4  },
-  { name: "KelesoG",      avatar: 5  },
-  { name: "BonganiX",     avatar: 6  },
-  { name: "ZaneleD",      avatar: 7  },
-  { name: "MikeT_ZA",     avatar: 8  },
-  { name: "AyandaN",      avatar: 9  },
-  { name: "TebogoW",      avatar: 10 },
-  { name: "FatimahR",     avatar: 11 },
-  { name: "highroller88", avatar: 0  },
-  { name: "NhlanhlaB",    avatar: 2  },
-  { name: "SibusoS",      avatar: 3  },
-  { name: "Gugu_plays",   avatar: 4  },
-  { name: "RefilweMO",    avatar: 5  },
-  { name: "DikelediP",    avatar: 6  },
-  { name: "MahlatseMN",   avatar: 7  },
-  { name: "ProPlayerZA",  avatar: 8  },
-  { name: "Mpho_T",       avatar: 9  },
-  { name: "LindiweMC",    avatar: 10 },
-  { name: "TshepoNR",     avatar: 11 },
-  { name: "AceGambler",   avatar: 1  },
-  { name: "KaraboFF",     avatar: 3  },
-  { name: "PreciousNK",   avatar: 5  },
-  { name: "big_win_sa",   avatar: 6  },
-  { name: "SelloMK",      avatar: 7  },
-  { name: "NomceboTZ",    avatar: 8  },
-  { name: "ThulisileP",   avatar: 9  },
-  { name: "DevilDarts",   avatar: 0  },
-  { name: "KhumoB",       avatar: 2  },
-  { name: "YusufRA",      avatar: 4  },
-  { name: "crash_king",   avatar: 5  },
-  { name: "MasegoNO",     avatar: 6  },
-  { name: "TebelloKK",    avatar: 7  },
-  { name: "ZithuleleM",   avatar: 8  },
-  { name: "BalungileN",   avatar: 9  },
-  { name: "Oratile_D",    avatar: 10 },
-  { name: "NoxoloBT",     avatar: 11 },
-  { name: "JabulaniSP",   avatar: 0  },
-  { name: "MokoenaRC",    avatar: 1  },
-  { name: "moonshot99",   avatar: 3  },
-  { name: "PumzaMB",      avatar: 4  },
-  { name: "SifoPD",       avatar: 5  },
-  { name: "BuhleNZ",      avatar: 6  },
-  { name: "TlotloGS",     avatar: 7  },
-  { name: "NkululekoM",   avatar: 8  },
-  { name: "AluphiweTA",   avatar: 9  },
-  { name: "rocketman_za", avatar: 10 },
-  { name: "MamelloKR",    avatar: 11 },
-  { name: "SinenhlaNB",   avatar: 0  },
-  { name: "OlwethuDZ",    avatar: 2  },
-  { name: "LungisaEM",    avatar: 3  },
-  { name: "NtsikiPB",     avatar: 4  },
-  { name: "KhanyisoTL",   avatar: 5  },
-  { name: "GcinileMH",    avatar: 6  },
-  { name: "MthunziKS",    avatar: 7  },
-  { name: "ZandisDG",     avatar: 8  },
-  { name: "ThabisileNP",  avatar: 9  },
-];
+function formatDateLabel(d: Date): string {
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${dd}.${mm}.${yy}`;
+}
 
-/* Date labels per period */
-const DAY_DATES = [
-  "22.06.26","22.06.26","22.06.26","22.06.26","22.06.26",
-  "21.06.26","21.06.26","21.06.26","21.06.26","21.06.26",
-  "20.06.26","20.06.26","20.06.26","20.06.26","20.06.26",
-  "19.06.26","19.06.26","19.06.26","18.06.26","18.06.26",
-];
-const MONTH_DATES = [
-  "22.06.26","21.06.26","20.06.26","19.06.26","18.06.26",
-  "17.06.26","16.06.26","15.06.26","14.06.26","13.06.26",
-  "12.06.26","11.06.26","10.06.26","09.06.26","08.06.26",
-  "07.06.26","06.06.26","05.06.26","04.06.26","03.06.26",
-];
-const YEAR_DATES = [
-  "22.06.26","15.06.26","01.06.26","20.05.26","05.05.26",
-  "18.04.26","02.04.26","14.03.26","27.02.26","10.02.26",
-  "25.01.26","08.01.26","22.12.25","05.12.25","18.11.25",
-  "01.11.25","14.10.25","27.09.25","10.09.25","24.08.25",
-];
+function rollingDates(spanDays: number, count: number): string[] {
+  const base = new Date();
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(base);
+    d.setDate(d.getDate() - (i % spanDays));
+    return formatDateLabel(d);
+  });
+}
 
 /* Per-period stat ranges */
 const PERIOD_CFG = {
@@ -132,7 +65,12 @@ interface TopEntry {
 
 function buildTopEntries(period: "Day" | "Month" | "Year"): TopEntry[] {
   const cfg = PERIOD_CFG[period];
-  const dates = period === "Day" ? DAY_DATES : period === "Month" ? MONTH_DATES : YEAR_DATES;
+  const dates =
+    period === "Day"
+      ? rollingDates(7, PLAYER_POOL.length)
+      : period === "Month"
+        ? rollingDates(30, PLAYER_POOL.length)
+        : rollingDates(365, PLAYER_POOL.length);
   return PLAYER_POOL.map((p, i) => {
     const r1 = seeded(p.name, i + 1);
     const r2 = seeded(p.name, i + 77);
@@ -156,22 +94,23 @@ function buildTopEntries(period: "Day" | "Month" | "Year"): TopEntry[] {
   });
 }
 
-/* Hardcoded previous-round ghost bets — shown when live bets list is thin */
-const PREV_GHOST_BETS: LiveBet[] = Array.from({ length: 38 }, (_, i) => {
-  const p   = PLAYER_POOL[i % PLAYER_POOL.length];
-  const r1  = seeded(p.name, i + 500);
-  const r2  = seeded(p.name, i + 600);
-  const r3  = seeded(p.name, i + 700);
-  const bet = 20 + Math.round(r1 * 2980 * 100) / 100;
-  const won = r2 > 0.38;
-  const mx  = won ? (1.05 + r3 * 11) : null;
+/* Rich previous-round entries — one per curated player */
+const PREV_GHOST_BETS: LiveBet[] = PLAYER_POOL.map((p, i) => {
+  const r1 = seeded(p.name, i + 500);
+  const r2 = seeded(p.name, i + 600);
+  const r3 = seeded(p.name, i + 700);
+  const r4 = seeded(p.name, i + 800);
+  const tiers = [10, 20, 50, 100, 150, 200, 250, 500, 750, 1000, 1500, 2000, 2500, 3000, 5000];
+  const bet = tiers[Math.floor(r1 * tiers.length)];
+  const won = r2 > 0.34;
+  const mx = won ? 1.08 + r3 * (r4 > 0.92 ? 48 : 12) : null;
   return {
-    id:          `ghost-${i}`,
-    name:        p.name,
-    avatar:      p.avatar,
+    id: `ghost-${i}`,
+    name: p.name,
+    avatar: p.avatar,
     bet,
-    win:         won && mx ? Math.round(bet * mx * 100) / 100 : null,
-    cashedOut:   won,
+    win: won && mx ? Math.round(bet * mx * 100) / 100 : null,
+    cashedOut: won,
     cashedOutAt: mx ? Math.round(mx * 100) / 100 : null,
   };
 });
@@ -181,6 +120,9 @@ export function LiveBets() {
   const history = useGame((s) => s.history);
   const currency = useGame((s) => s.currency);
   const totalWin = useGame((s) => s.totalWin);
+  const connected = useGame((s) => s.connected);
+  const roundId = useGame((s) => s.roundId);
+  const ready = connected && roundId !== "";
   const [tab, setTab] = useState<(typeof tabs)[number]>("All Bets");
   const [topMetric, setTopMetric] = useState<(typeof topMetricTabs)[number]>("X");
   const [topPeriod, setTopPeriod] = useState<(typeof topPeriodTabs)[number]>("Day");
@@ -230,7 +172,7 @@ export function LiveBets() {
         />
       )}
 
-      <Footer />
+      {ready ? <Footer /> : null}
     </div>
   );
 }
@@ -264,22 +206,16 @@ function AllBets({
     <>
       {/* Box 2 — summary */}
       <div className="shrink-0 rounded-2xl bg-[#15171a] px-3.5 py-3">
-        <div className="flex items-start justify-between">
-          <div className="flex flex-col gap-1.5">
-            <div className="flex -space-x-2.5">
-              {bets.slice(0, 3).map((b) => (
-                <span
-                  key={`s-${b.id}`}
-                  className="rounded-full ring-2 ring-[#15171a]"
-                >
-                  <Avatar id={b.avatar} size={26} />
-                </span>
-              ))}
-            </div>
-            <span className="text-[12px] leading-none text-white/55">
-              <span className="font-bold text-white">{settled}</span>
-              <span className="text-white/80">/{total}</span> Bets
-            </span>
+        <div className="flex items-center justify-between">
+          <div className="flex -space-x-2.5">
+            {bets.slice(0, 4).map((b) => (
+              <span
+                key={`s-${b.id}`}
+                className="rounded-full ring-2 ring-[#15171a]"
+              >
+                <Avatar id={b.avatar} size={26} />
+              </span>
+            ))}
           </div>
           <div className="text-right">
             <div className="text-[18px] font-extrabold leading-none text-white">

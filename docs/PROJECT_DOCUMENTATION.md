@@ -68,11 +68,13 @@ avitor/
 │   │   ├── supabaseClient.ts     # Supabase connection (service_role)
 │   │   ├── provablyFair.ts       # SHA-256 seed → crash point
 │   │   ├── fakeBets.ts           # Bot generator
+│   │   ├── adminControls.ts       # Admin controls service (load/save/apply)
 │   │   ├── types.ts              # Shared types
 │   │   └── globals.d.ts          # Global type for __gameEngine
 │   ├── supabase/migrations/
 │   │   ├── 000001_initial_schema.sql
-│   │   └── 000002_game_rpc_functions.sql
+│   │   ├── 000002_game_rpc_functions.sql
+│   │   └── 000003_admin_controls.sql  # Admin controls singleton table
 │   ├── .env.example
 │   └── package.json
 ├── frontend/
@@ -1302,20 +1304,55 @@ Internet → nginx/CDN → frontend dist/ (static)
 
 ## 23. Known Issues & Fixes
 
+### Resolved Issues
+
+| # | Issue | Resolution |
+|---|-------|------------|
+| C2 | `admin_controls` table didn't exist — admin settings reset on restart | **Fixed:** New `000003_admin_controls.sql` migration creates singleton `admin_controls` table. `adminControls.ts` service loads/saves from DB. Settings persist across restarts. |
+| C3 | `place_bet` RPC read limits from `config.bet_limits` but admin wrote `min_bet`/`max_bet` as separate keys | **Fixed:** `saveAdminControls()` now writes to `admin_controls` AND syncs `config.bet_limits` JSON in one call. RPC reads correct limits. |
+
+### Remaining Issues
+
 | # | Issue | Impact | How to Fix |
-|---|-------|--------|-----------|
+|---|-------|--------|------------|
 | C1 | `auth:identify` uses `supabase.auth.getUser()` but frontend sends HMAC token | Auth users can't use real wallets | Replace with `verifyToken()` from authRouter |
-| C2 | `loadAdminControls()` reads from `admin_controls` table (doesn't exist) | Admin settings reset on restart | Read from `config` table or create `admin_controls` |
-| C3 | `place_bet` RPC reads limits from `config where key='bet_limits'` but admin writes `min_bet`/`max_bet` separately | Bet limits don't work for auth users | Update RPC to read separate keys |
 | C4 | Hardcoded admin credentials | Security risk | Move to environment variables |
 | C5 | Socket.IO CORS is `origin: "*"` | Any site can connect | Use `CORS_ORIGIN` env var |
+
+### Admin Controls Architecture (Post-Fix)
+
+```
+┌─────────────┐   PATCH /api/admin/controls   ┌──────────────────┐
+│  Admin UI   │ ────────────────────────────► │  authRouter      │
+│             │                               │                  │
+│             │ ◄──────────────────────────── │  saveAdminControls() │
+│             │   { ok: true, controls }      │  → upsert admin_controls │
+└─────────────┘                               │  → sync config.bet_limits │
+                                              │  → applyControlsToEngine() │
+                                              │  → io.emit("betLimits:update") │
+                                              └──────────────────┘
+
+Server start:
+  GameEngine.start()
+    → loadAdminControls()  (reads admin_controls table)
+    → applyControlsToEngine()
+    → engine runs with persisted settings
+```
+
+**New files:**
+- `backend/supabase/migrations/000003_admin_controls.sql` — table + seed from `config.bet_limits`
+- `backend/src/adminControls.ts` — `loadAdminControls()`, `saveAdminControls()`, `applyControlsToEngine()`
+
+**Updated files:**
+- `backend/src/gameEngine.ts` — `loadAdminControls()` now uses `adminControls.ts` service
+- `backend/src/authRouter.ts` — GET/PATCH `/api/admin/controls` use `loadAdminControls()` / `saveAdminControls()`
 
 **What's already clean:**
 - No unused dependencies (removed `@supabase/supabase-js` frontend, `jsonwebtoken` backend)
 - No dead code, no TODOs
 - TypeScript compiles clean
 - Security headers, rate limiting, wallet row locking all in place
-- Root codebase organized (test/archive files moved to `_archive/`)
+- Root codebase clean (no root package.json, no _archive)
 
 ---
 

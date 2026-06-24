@@ -18,4 +18,14 @@ export default defineConfig({
       "/socket.io": { target: backend, ws: true, changeOrigin: true },
     },
   },
+  preview: {
+    port: 4173,
+    host: true,
+    strictPort: true,
+    allowedHosts: true,
+    proxy: {
+      "/api": { target: backend, changeOrigin: true },
+      "/socket.io": { target: backend, ws: true, changeOrigin: true },
+    },
+  },
 });
