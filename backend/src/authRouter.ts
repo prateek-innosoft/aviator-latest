@@ -1,17 +1,52 @@
 import { Router, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { createClient } from "@supabase/supabase-js";
+import crypto from "node:crypto";
 import { supabase } from "./supabaseClient.js";
 import type { GameEngine } from "./gameEngine.js";
 
 declare global {
   // eslint-disable-next-line no-var
   var __gameEngine: GameEngine | undefined;
+  // eslint-disable-next-line no-var
+  var __io: import("socket.io").Server | undefined;
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
+// ── Simple admin credentials ───────────────────────────────────────────────
+// Hardcoded for now — no Supabase Auth dependency.
+const ADMIN_EMAIL    = "admin@aviator.com";
+const ADMIN_PASSWORD = "admin123";
+const ADMIN_ID       = "admin-0000-0000-0000-000000000001";
+
+// Secret used to sign/verify admin tokens (HMAC-SHA256).
+const TOKEN_SECRET = process.env.ADMIN_TOKEN_SECRET ?? "aviator-admin-secret-key";
+
+interface AdminToken {
+  id: string;
+  email: string;
+  role: string;
+  exp: number;
+}
+
+function signToken(payload: AdminToken): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig  = crypto.createHmac("sha256", TOKEN_SECRET).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifyToken(token: string): AdminToken | null {
+  const [body, sig] = token.split(".");
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(body).digest("base64url");
+  if (sig !== expected) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as AdminToken;
+    if (payload.exp < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 export const authRouter = Router();
 
@@ -39,7 +74,7 @@ const LoginSchema = z.object({
   password: z.string().min(6).max(128),
 });
 
-// ── JWT verification middleware ────────────────────────────────────────────
+// ── Token verification middleware ──────────────────────────────────────────
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
@@ -47,33 +82,21 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
   const token = header.slice(7);
-
-  // Verify the Supabase JWT by calling Supabase with the user token
-  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth:   { persistSession: false },
-  });
-
-  const { data: { user }, error } = await userClient.auth.getUser();
-  if (error || !user) {
+  const payload = verifyToken(token);
+  if (!payload) {
     res.status(401).json({ ok: false, reason: "invalid_token" });
     return;
   }
 
-  (req as AuthedRequest).user = { id: user.id, email: user.email ?? undefined };
+  (req as AuthedRequest).user = { id: payload.id, email: payload.email, role: payload.role };
   (req as AuthedRequest).token = token;
   next();
 }
 
 export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   await requireAuth(req, res, async () => {
-    const uid = (req as AuthedRequest).user?.id;
-    const { data, error } = await supabase
-      .from("users")
-      .select("role")
-      .eq("id", uid)
-      .single();
-    if (error || !data || !["admin", "superadmin"].includes(data.role)) {
+    const role = (req as AuthedRequest).user?.role;
+    if (role !== "admin" && role !== "superadmin") {
       res.status(403).json({ ok: false, reason: "forbidden" });
       return;
     }
@@ -82,7 +105,7 @@ export async function requireAdmin(req: Request, res: Response, next: NextFuncti
 }
 
 export interface AuthedRequest extends Request {
-  user?: { id: string; email?: string | undefined } & Record<string, unknown>;
+  user?: { id: string; email?: string | undefined; role?: string } & Record<string, unknown>;
   token?: string;
 }
 
@@ -95,53 +118,30 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response) => {
   }
   const { email, password } = parse.data;
 
-  // Sign in via Supabase Auth REST API
-  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false },
-  });
-  const { data, error } = await anonClient.auth.signInWithPassword({ email, password });
-
-  if (error || !data.session) {
-    // Generic message — never reveal whether email exists
-    res.status(401).json({ ok: false, reason: "invalid_credentials" });
+  // Simple hardcoded admin check
+  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+    const exp = Date.now() + 24 * 60 * 60 * 1000; // 24-hour token
+    const token = signToken({ id: ADMIN_ID, email: ADMIN_EMAIL, role: "admin", exp });
+    res.json({
+      ok: true,
+      access_token:  token,
+      refresh_token: token,
+      expires_at:    Math.floor(exp / 1000),
+      user: {
+        id:           ADMIN_ID,
+        email:        ADMIN_EMAIL,
+        username:     "admin",
+        display_name: "Admin",
+        role:         "admin",
+        kyc_status:   "verified",
+        balance:      0,
+        currency:     "ZAR",
+      },
+    });
     return;
   }
 
-  // Fetch profile
-  const { data: profile, error: profileErr } = await supabase
-    .from("users")
-    .select("id, email, username, display_name, role, kyc_status")
-    .eq("id", data.user.id)
-    .single();
-
-  if (profileErr || !profile) {
-    res.status(500).json({ ok: false, reason: "profile_missing" });
-    return;
-  }
-
-  // Fetch wallet balance
-  const { data: wallet } = await supabase
-    .from("wallets")
-    .select("balance, currency")
-    .eq("user_id", data.user.id)
-    .single();
-
-  res.json({
-    ok: true,
-    access_token:  data.session.access_token,
-    refresh_token: data.session.refresh_token,
-    expires_at:    data.session.expires_at,
-    user: {
-      id:           profile.id,
-      email:        profile.email,
-      username:     profile.username,
-      display_name: profile.display_name,
-      role:         profile.role,
-      kyc_status:   profile.kyc_status,
-      balance:      Number(wallet?.balance ?? 0),
-      currency:     wallet?.currency ?? "ZAR",
-    },
-  });
+  res.status(401).json({ ok: false, reason: "invalid_credentials" });
 });
 
 // ── POST /api/auth/refresh ─────────────────────────────────────────────────
@@ -152,62 +152,42 @@ authRouter.post("/refresh", async (req: Request, res: Response) => {
     return;
   }
 
-  const anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false },
-  });
-  const { data, error } = await anonClient.auth.refreshSession({ refresh_token });
-  if (error || !data.session) {
+  const payload = verifyToken(refresh_token);
+  if (!payload) {
     res.status(401).json({ ok: false, reason: "refresh_failed" });
     return;
   }
 
+  const exp = Date.now() + 24 * 60 * 60 * 1000;
+  const newToken = signToken({ ...payload, exp });
   res.json({
     ok: true,
-    access_token:  data.session.access_token,
-    refresh_token: data.session.refresh_token,
-    expires_at:    data.session.expires_at,
+    access_token:  newToken,
+    refresh_token: newToken,
+    expires_at:    Math.floor(exp / 1000),
   });
 });
 
 // ── POST /api/auth/logout ──────────────────────────────────────────────────
-authRouter.post("/logout", requireAuth, async (req: Request, res: Response) => {
-  // Supabase handles token invalidation server-side via the user's token
-  const token = (req as AuthedRequest).token!;
-  const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-    auth:   { persistSession: false },
-  });
-  await userClient.auth.signOut();
+authRouter.post("/logout", requireAuth, async (_req: Request, res: Response) => {
+  // Stateless tokens — client just discards the token.
   res.json({ ok: true });
 });
 
 // ── GET /api/auth/me ────────────────────────────────────────────────────────
 authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
-  const uid = (req as AuthedRequest).user!.id;
-
-  const { data: profile, error } = await supabase
-    .from("users")
-    .select("id, email, username, display_name, role, kyc_status, created_at")
-    .eq("id", uid)
-    .single();
-
-  if (error || !profile) {
-    res.status(404).json({ ok: false, reason: "not_found" });
-    return;
-  }
-
-  const { data: wallet } = await supabase
-    .from("wallets")
-    .select("balance, currency")
-    .eq("user_id", uid)
-    .single();
-
+  const user = (req as AuthedRequest).user!;
   res.json({
     ok: true,
     user: {
-      ...profile,
-      balance:  Number(wallet?.balance ?? 0),
-      currency: wallet?.currency ?? "ZAR",
+      id:           user.id,
+      email:        user.email ?? "",
+      username:     "admin",
+      display_name: "Admin",
+      role:         user.role ?? "admin",
+      kyc_status:   "verified",
+      balance:      0,
+      currency:     "ZAR",
     },
   });
 });
@@ -218,13 +198,35 @@ authRouter.get(
   adminLimiter,
   requireAdmin,
   async (_req: Request, res: Response) => {
-    const { data, error } = await supabase
-      .from("admin_controls")
-      .select("*")
-      .eq("id", 1)
-      .single();
-    if (error) { res.status(500).json({ ok: false, reason: error.message }); return; }
-    res.json({ ok: true, controls: data });
+    // Read from the config key-value table (best-effort).
+    const cfg: Record<string, number> = {};
+    try {
+      const { data, error } = await supabase
+        .from("config")
+        .select("key, value")
+        .in("key", ["house_edge", "min_bet", "max_bet"]);
+      if (!error && data) {
+        for (const row of data) cfg[row.key] = Number(row.value);
+      }
+    } catch { /* Supabase unreachable — use defaults */ }
+
+    // Read current in-memory win mode from the game engine
+    const engine = globalThis.__gameEngine;
+    const currentWinMode = engine?.overrides.winMode ?? "normal";
+
+    res.json({
+      ok: true,
+      controls: {
+        id: 1,
+        house_edge:       cfg.house_edge ?? engine?.overrides.globalWinRate ?? 0.5,
+        min_bet:          cfg.min_bet ?? engine?.overrides.minBet ?? 1,
+        max_bet:          cfg.max_bet ?? engine?.overrides.maxBet ?? 50000,
+        next_crash_point: engine?.overrides.nextCrashPoint ?? null,
+        win_mode:         currentWinMode,
+        forced_crash:     engine?.overrides.forcedCrash ?? null,
+        updated_at:       new Date().toISOString(),
+      },
+    });
   }
 );
 
@@ -247,9 +249,17 @@ authRouter.patch(
       res.status(400).json({ ok: false, reason: "validation", errors: parse.error.flatten() });
       return;
     }
-    const patch = { ...parse.data, updated_at: new Date().toISOString() };
-    const { error } = await supabase.from("admin_controls").update(patch).eq("id", 1);
-    if (error) { res.status(500).json({ ok: false, reason: error.message }); return; }
+
+    // Update config key-value rows for the fields we support.
+    const updates: { key: string; value: number }[] = [];
+    if (parse.data.house_edge !== undefined) updates.push({ key: "house_edge", value: parse.data.house_edge });
+    if (parse.data.min_bet    !== undefined) updates.push({ key: "min_bet",    value: parse.data.min_bet });
+    if (parse.data.max_bet    !== undefined) updates.push({ key: "max_bet",    value: parse.data.max_bet });
+
+    for (const u of updates) {
+      const { error } = await supabase.from("config").update({ value: u.value, updated_at: new Date().toISOString() }).eq("key", u.key);
+      if (error) console.warn("[admin] config update failed for key=%s: %s", u.key, error.message);
+    }
 
     // Notify game engine of updated controls via global event emitter
     if (globalThis.__gameEngine) {
@@ -267,6 +277,14 @@ authRouter.patch(
           parse.data.min_bet ?? undefined,
           parse.data.max_bet ?? undefined,
         );
+        // Broadcast new bet limits to all connected clients
+        const io = globalThis.__io;
+        if (io) {
+          io.emit("betLimits:update", {
+            minBet: globalThis.__gameEngine.overrides.minBet,
+            maxBet: globalThis.__gameEngine.overrides.maxBet,
+          });
+        }
       }
       if (parse.data.house_edge !== undefined) {
         globalThis.__gameEngine.setGlobalWinRate(parse.data.house_edge);
@@ -283,7 +301,7 @@ authRouter.get(
   requireAdmin,
   async (_req: Request, res: Response) => {
     const [usersRes, roundsRes, walletsRes] = await Promise.all([
-      supabase.from("users").select("id, role, created_at", { count: "exact" }),
+      supabase.from("user_profiles").select("id, role, created_at", { count: "exact" }),
       supabase.from("rounds").select("id, crash_point, status, ended_at")
         .order("ended_at", { ascending: false }).limit(100),
       supabase.from("wallets").select("balance"),

@@ -183,7 +183,8 @@ export function RateControlPanel({ token }: { token: string }) {
 
   useEffect(() => { init(); }, [init]);
 
-  const [globalWinRate, setGlobalWinRate] = useState(50);
+  // 0 = House Wins (max 2x), 50 = Fair (max 10x), 100 = Players Win (100x-130x)
+  const [winMode, setWinMode]             = useState<0 | 50 | 100>(50);
   const [minBet, setMinBet]               = useState("1");
   const [maxBet, setMaxBet]               = useState("50000");
   const [loading, setLoading]             = useState(true);
@@ -200,7 +201,10 @@ export function RateControlPanel({ token }: { token: string }) {
       const { controls } = await adminApi.getControls(token);
       setMinBet(String(controls.min_bet));
       setMaxBet(String(controls.max_bet));
-      setGlobalWinRate(Math.round((controls.house_edge ?? 0.5) * 100));
+      // Map backend win_mode back to our 3-position value
+      if (controls.win_mode === "win") setWinMode(100);
+      else if (controls.win_mode === "loss") setWinMode(0);
+      else setWinMode(50);
     } catch (e: unknown) {
       show(e instanceof Error ? e.message : "Load failed", false);
     } finally {
@@ -210,12 +214,13 @@ export function RateControlPanel({ token }: { token: string }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const commit = useCallback(async (rate: number, minB: string, maxB: string) => {
+  const commit = useCallback(async (mode: 0 | 50 | 100, minB: string, maxB: string) => {
     setSaving(true);
     try {
+      const win_mode = mode === 100 ? "win" : mode === 0 ? "loss" : "normal";
       const patch: Partial<AdminControls> = {
-        win_mode:   "normal",
-        house_edge: rate / 100,
+        win_mode:   win_mode as "normal" | "win" | "loss",
+        house_edge: mode / 100,
         min_bet:    Number(minB),
         max_bet:    Number(maxB),
       };
@@ -229,14 +234,14 @@ export function RateControlPanel({ token }: { token: string }) {
     }
   }, [token]);
 
-  const schedule = (rate: number, minB: string, maxB: string) => {
+  const schedule = (mode: 0 | 50 | 100, minB: string, maxB: string) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => commit(rate, minB, maxB), 600);
+    debounceRef.current = setTimeout(() => commit(mode, minB, maxB), 600);
   };
 
-  const handleRate   = (r: number) => { setGlobalWinRate(r); schedule(r, minBet, maxBet); };
-  const handleMinBet = (v: string) => { setMinBet(v);  schedule(globalWinRate, v, maxBet); };
-  const handleMaxBet = (v: string) => { setMaxBet(v);  schedule(globalWinRate, minBet, v); };
+  const handleMode   = (m: 0 | 50 | 100) => { setWinMode(m); schedule(m, minBet, maxBet); };
+  const handleMinBet = (v: string) => { setMinBet(v);  schedule(winMode, v, maxBet); };
+  const handleMaxBet = (v: string) => { setMaxBet(v);  schedule(winMode, minBet, v); };
 
   return (
     <div className="flex min-h-screen flex-col bg-[#f5f6f8] text-gray-900">
@@ -289,56 +294,83 @@ export function RateControlPanel({ token }: { token: string }) {
 
         {/* Global Win Rate card */}
         <section className="mb-5 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-4 flex items-baseline justify-between">
-            <div>
-              <h2 className="text-[15px] font-bold text-gray-900">Global Win Rate</h2>
-              <p className="text-[12px] text-gray-400">How often players win across the whole game.</p>
-            </div>
-            <span className={`rounded-lg px-2.5 py-1 text-[14px] font-black tabular-nums ${
-              globalWinRate >= 75 ? "bg-emerald-100 text-emerald-700"
-              : globalWinRate <= 25 ? "bg-red-100 text-red-600"
-              : "bg-gray-100 text-gray-600"
-            }`}>{globalWinRate}%</span>
+          <div className="mb-4">
+            <h2 className="text-[15px] font-bold text-gray-900">Global Win Rate</h2>
+            <p className="text-[12px] text-gray-400">Controls the multiplier range for every round.</p>
           </div>
 
-          <div className="mb-1.5 flex justify-between">
-            <span className="text-[9px] font-semibold uppercase tracking-wider text-red-400">House wins</span>
-            <span className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Fair</span>
-            <span className="text-[9px] font-semibold uppercase tracking-wider text-emerald-500">Players win</span>
-          </div>
-          <div className="relative h-8">
-            <div className="absolute inset-x-0 top-1/2 h-2.5 -translate-y-1/2 rounded-full"
-              style={{ background: "linear-gradient(to right, #ef4444, #f59e0b 50%, #10b981)" }} />
-            <div className="absolute top-1/2 h-2.5 -translate-y-1/2 rounded-l-full bg-white/60"
-              style={{ left: 0, width: `${globalWinRate}%` }} />
-            <input type="range" min={0} max={100} value={globalWinRate}
-              onChange={e => handleRate(Number(e.target.value))}
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0" />
-            <div className="pointer-events-none absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-md transition-colors"
-              style={{ left: `${globalWinRate}%`, background: globalWinRate >= 75 ? "#10b981" : globalWinRate <= 25 ? "#ef4444" : "#6b7280" }} />
-          </div>
+          {/* 3-position selector */}
+          <div className="grid grid-cols-3 gap-3">
+            {/* House Wins */}
+            <button
+              onClick={() => handleMode(0)}
+              className={`flex flex-col items-center gap-2 rounded-2xl border-2 p-5 transition ${
+                winMode === 0
+                  ? "border-red-400 bg-red-50"
+                  : "border-gray-200 bg-white hover:border-gray-300"
+              }`}>
+              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${
+                winMode === 0 ? "bg-red-500 text-white" : "bg-gray-100 text-gray-400"
+              }`}>
+                <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2.5">
+                  <path d="M5 19L19 5M19 5H9M19 5v10" />
+                </svg>
+              </div>
+              <div className="text-center">
+                <div className={`text-[14px] font-black ${winMode === 0 ? "text-red-600" : "text-gray-400"}`}>House Wins</div>
+                <div className="mt-0.5 text-[11px] text-gray-400">Max 2× multiplier</div>
+              </div>
+            </button>
 
-          <div className="mt-4 grid grid-cols-5 gap-1.5">
-            {([
-              { label: "0%",   v: 0   },
-              { label: "25%",  v: 25  },
-              { label: "50%",  v: 50  },
-              { label: "75%",  v: 75  },
-              { label: "100%", v: 100 },
-            ] as const).map(p => (
-              <button key={p.v} onClick={() => handleRate(p.v)}
-                className={`rounded-lg border py-2 text-[11px] font-bold transition ${
-                  globalWinRate === p.v ? "border-gray-300 bg-gray-100 text-gray-700" : "border-gray-200 text-gray-400 hover:bg-gray-50"
-                }`}>{p.label}</button>
-            ))}
+            {/* Fair */}
+            <button
+              onClick={() => handleMode(50)}
+              className={`flex flex-col items-center gap-2 rounded-2xl border-2 p-5 transition ${
+                winMode === 50
+                  ? "border-amber-400 bg-amber-50"
+                  : "border-gray-200 bg-white hover:border-gray-300"
+              }`}>
+              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${
+                winMode === 50 ? "bg-amber-500 text-white" : "bg-gray-100 text-gray-400"
+              }`}>
+                <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2.5">
+                  <path d="M12 3v18M3 12h18" />
+                </svg>
+              </div>
+              <div className="text-center">
+                <div className={`text-[14px] font-black ${winMode === 50 ? "text-amber-600" : "text-gray-400"}`}>Fair</div>
+                <div className="mt-0.5 text-[11px] text-gray-400">Max 10× multiplier</div>
+              </div>
+            </button>
+
+            {/* Players Win */}
+            <button
+              onClick={() => handleMode(100)}
+              className={`flex flex-col items-center gap-2 rounded-2xl border-2 p-5 transition ${
+                winMode === 100
+                  ? "border-emerald-400 bg-emerald-50"
+                  : "border-gray-200 bg-white hover:border-gray-300"
+              }`}>
+              <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${
+                winMode === 100 ? "bg-emerald-500 text-white" : "bg-gray-100 text-gray-400"
+              }`}>
+                <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2.5">
+                  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+                </svg>
+              </div>
+              <div className="text-center">
+                <div className={`text-[14px] font-black ${winMode === 100 ? "text-emerald-600" : "text-gray-400"}`}>Players Win</div>
+                <div className="mt-0.5 text-[11px] text-gray-400">100× – 130× multiplier</div>
+              </div>
+            </button>
           </div>
 
           <div className="mt-4 rounded-xl bg-gray-50 px-4 py-3 text-[12px] leading-relaxed text-gray-500">
-            {globalWinRate >= 90 ? "Players win almost every round with very high multipliers (up to 130×)."
-            : globalWinRate >= 65 ? "Players win more often than they lose. Generous payouts."
-            : globalWinRate >= 35 ? "Balanced — statistically fair for all players (capped at 10×)."
-            : globalWinRate >= 10 ? "House wins more often — players lose most bets (crash around 1–2×)."
-            : "Players crash almost every round before cashing out."}
+            {winMode === 100
+              ? "Players win almost every round with very high multipliers (100×–130×)."
+              : winMode === 50
+              ? "Balanced — statistically fair for all players (capped at 10×)."
+              : "House wins — players crash almost every round before cashing out (max 2×)."}
           </div>
         </section>
 
@@ -358,7 +390,7 @@ export function RateControlPanel({ token }: { token: string }) {
         <section className="rounded-2xl border border-blue-100 bg-blue-50 p-6">
           <h2 className="mb-3 text-[13px] font-bold uppercase tracking-wider text-blue-500">How it works</h2>
           <div className="space-y-2 text-[12px] leading-relaxed text-blue-700">
-            <p><span className="font-semibold">Global Win Rate</span> biases the outcome of every round. Move it left for the house to win, right for players to win, or keep it at 50% for a provably-fair game.</p>
+            <p><span className="font-semibold">Global Win Rate</span> controls the multiplier range: House Wins (max 2×), Fair (max 10×), or Players Win (100×–130×).</p>
             <p><span className="font-semibold">Bet Limits</span> apply to all players — bets outside this range are rejected.</p>
             <p className="border-t border-blue-200 pt-2 text-blue-600">Changes save automatically and take effect on the next round. The live multiplier and recent crash history are shown in the top bar.</p>
           </div>

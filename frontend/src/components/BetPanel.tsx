@@ -4,8 +4,6 @@ import { useGame } from "../store/gameStore";
 import { fmt } from "../lib/format";
 
 const CHIPS = [10, 20, 50, 100];
-const MIN = 1;
-const MAX = 50000;
 
 export function BetPanel({
   index,
@@ -24,6 +22,7 @@ export function BetPanel({
   const phase = useGame((s) => s.phase);
   const multiplier = useGame((s) => s.multiplier);
   const balance = useGame((s) => s.balance);
+  const betLimits = useGame((s) => s.betLimits);
   const setPanel = useGame((s) => s.setPanel);
   const placeBet = useGame((s) => s.placeBet);
   const cancelBet = useGame((s) => s.cancelBet);
@@ -53,7 +52,7 @@ export function BetPanel({
     setAcoDraft(null);
   };
 
-  const clamp = (v: number) => Math.max(MIN, Math.min(MAX, Math.round(v * 100) / 100));
+  const clamp = (v: number) => Math.max(betLimits.minBet, Math.min(betLimits.maxBet, Math.round(v * 100) / 100));
   const setAmount = (v: number) => setPanel(index, { amount: clamp(v) });
 
   // Pulse the cash-out button as the multiplier climbs.

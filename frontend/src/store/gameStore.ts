@@ -33,6 +33,10 @@ interface GameState {
   /** Authenticated user id — null for demo/guest. */
   userId: string | null;
   accessToken: string | null;
+  /** Admin-controlled bet limits, synced from server. */
+  betLimits: { minBet: number; maxBet: number };
+  /** Toast for bet rejection messages. */
+  betErrorToast: { msg: string; at: number } | null;
 
   setPanel: (panel: 0 | 1, patch: Partial<PanelState>) => void;
   placeBet: (panel: 0 | 1) => void;
@@ -76,6 +80,8 @@ export const useGame = create<GameState>((set, get) => ({
   lastWinToast: null,
   userId: null,
   accessToken: null,
+  betLimits: { minBet: 1, maxBet: 50000 },
+  betErrorToast: null,
 
   setAuth: ({ userId, accessToken }) => set({ userId, accessToken }),
 
@@ -90,6 +96,14 @@ export const useGame = create<GameState>((set, get) => ({
     const s = get();
     const p = s.panels[panel];
     if (p.active || p.queued) return;
+    if (p.amount < s.betLimits.minBet) {
+      set({ betErrorToast: { msg: `Minimum bet is ${s.betLimits.minBet} ZAR`, at: Date.now() } });
+      return;
+    }
+    if (p.amount > s.betLimits.maxBet) {
+      set({ betErrorToast: { msg: `Maximum bet is ${s.betLimits.maxBet} ZAR`, at: Date.now() } });
+      return;
+    }
     if (p.amount > s.balance) return;
     const userId = s.userId;
     const isAuth = !!userId;
@@ -143,7 +157,7 @@ export const useGame = create<GameState>((set, get) => ({
 
     socket.on(
       "init",
-      (data: { state: PublicRoundState; balance: number; currency: string }) => {
+      (data: { state: PublicRoundState; balance: number; currency: string; betLimits?: { minBet: number; maxBet: number } }) => {
         const st = data.state;
         set({
           phase: st.phase,
@@ -157,7 +171,19 @@ export const useGame = create<GameState>((set, get) => ({
           balance: data.balance,
           currency: data.currency,
           flyingStartedAt: st.phase === "flying" ? Date.now() : null,
+          ...(data.betLimits ? { betLimits: data.betLimits } : {}),
         });
+        // Clamp panel amounts to the received bet limits.
+        if (data.betLimits) {
+          const bl = data.betLimits;
+          set((s) => {
+            const panels = s.panels.map((panel) => ({
+              ...panel,
+              amount: Math.max(bl.minBet, Math.min(bl.maxBet, panel.amount)),
+            })) as [PanelState, PanelState];
+            return { panels };
+          });
+        }
       },
     );
 
@@ -287,10 +313,36 @@ export const useGame = create<GameState>((set, get) => ({
       },
     );
 
-    socket.on("bet:rejected", (p: { panel: 0 | 1; reason?: string }) => {
+    socket.on("bet:rejected", (p: { panel: 0 | 1; reason?: string; minBet?: number; maxBet?: number }) => {
       // The client never deducted optimistically, so there's nothing to revert.
       // Balance stays as the server reported it; just clear the panel state.
       get().setPanel(p.panel, { active: false, queued: false });
+      // No toast for phase/duplicate — these are expected during normal play.
+      const silentReasons = ["phase", "duplicate"];
+      if (p.reason && silentReasons.includes(p.reason)) return;
+      // Show user-friendly toast for actionable rejections only.
+      const reasonMessages: Record<string, string> = {
+        below_min: p.minBet ? `Minimum bet is ${p.minBet} ZAR` : "Bet amount is too low",
+        above_max: p.maxBet ? `Maximum bet is ${p.maxBet} ZAR` : "Bet amount is too high",
+        insufficient: "Insufficient balance",
+        server_error: "Server error — please try again",
+        invalid_amount: "Invalid bet amount",
+        no_wallet: "No wallet found — please log in",
+        rejected: "Bet rejected",
+      };
+      const msg = p.reason ? (reasonMessages[p.reason] ?? p.reason) : "Bet rejected";
+      set({ betErrorToast: { msg, at: Date.now() } });
+    });
+
+    // Admin updates bet limits — sync immediately and clamp panel amounts.
+    socket.on("betLimits:update", (p: { minBet: number; maxBet: number }) => {
+      set((s) => {
+        const panels = s.panels.map((panel) => ({
+          ...panel,
+          amount: Math.max(p.minBet, Math.min(p.maxBet, panel.amount)),
+        })) as [PanelState, PanelState];
+        return { betLimits: { minBet: p.minBet, maxBet: p.maxBet }, panels };
+      });
     });
 
     // Server restores persistent balance after reconnect.

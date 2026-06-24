@@ -124,20 +124,8 @@ export class GameEngine extends EventEmitter {
         // House win: bust at or below 2×
         result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
       } else {
-        // ── Normal mode (fair): apply globalWinRate bias, max 10× ────────────
-        const r = this.overrides.globalWinRate; // 0-1
-        if (r >= 0.98) {
-          result = Math.round((5 + Math.random() * 5) * 100) / 100;
-        } else if (r <= 0.02) {
-          result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
-        } else {
-          const roll = Math.random();
-          if (roll < r) {
-            result = Math.min(Math.max(base, 2.0), 10.0);
-          } else {
-            result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
-          }
-        }
+        // ── Normal mode (fair): 100% random from 1.00× to 10.00× ───────────
+        result = Math.round((1.0 + Math.random() * 9.0) * 100) / 100;
       }
     }
 
@@ -425,6 +413,8 @@ export class GameEngine extends EventEmitter {
   placeBet(socketId: string, panel: 0 | 1, amount: number, userId?: string): boolean {
     if (this.phase !== "betting") return false;
     if (amount <= 0) return false;
+    if (amount < this.overrides.minBet) return false;
+    if (amount > this.overrides.maxBet) return false;
     const existing = this.playerBets.find(
       (b) => b.socketId === socketId && b.panel === panel,
     );

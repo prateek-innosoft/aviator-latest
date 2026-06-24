@@ -329,7 +329,7 @@ function Previous({
 
   return (
     <>
-      <div className="shrink-0 rounded-2xl bg-[#15171a] px-3.5 py-3">
+      <div className="shrink-0 rounded-2xl bg-[#15171a] px-3.5 py-3 text-center">
         <div className="text-[11px] text-white/45">Round Result</div>
         <div
           className={`text-[22px] font-extrabold leading-tight ${

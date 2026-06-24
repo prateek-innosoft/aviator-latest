@@ -108,6 +108,20 @@ body {
   100% { transform: translateX(-4px) scale(0.33); opacity: 0.5; }
 }
 
+@keyframes loading-sweep {
+  0% {
+    transform: translateX(-100%);
+    width: 40%;
+  }
+  50% {
+    width: 70%;
+  }
+  100% {
+    transform: translateX(250%);
+    width: 40%;
+  }
+}
+
 @keyframes pulse-soft {
   0%,
   100% {
@@ -122,4 +136,15 @@ body {
   text-shadow:
     0 2px 14px rgba(0, 0, 0, 0.6),
     0 0 2px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes fadeSlide {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }

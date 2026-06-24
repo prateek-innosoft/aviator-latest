@@ -66,6 +66,7 @@ const engine = new GameEngine();
 
 // Expose engine globally so authRouter can push overrides into it
 (globalThis as Record<string, unknown>).__gameEngine = engine;
+(globalThis as Record<string, unknown>).__io = io;
 
 // Demo in-memory balances for unauthenticated (demo) sockets.
 const demoBalances = new Map<string, number>();
@@ -153,6 +154,7 @@ io.on("connection", (socket) => {
     state: engine.publicState(),
     balance: getDemoBalance(),
     currency: "ZAR",
+    betLimits: { minBet: engine.overrides.minBet, maxBet: engine.overrides.maxBet },
   });
 
   // Authenticated client identifies itself so we can push real wallet balance.
@@ -205,6 +207,14 @@ io.on("connection", (socket) => {
     } else {
       // Demo / unauthenticated path: in-memory balance.
       const balance = getDemoBalance();
+      if (amount < engine.overrides.minBet) {
+        socket.emit("bet:rejected", { panel, reason: "below_min", minBet: engine.overrides.minBet });
+        return;
+      }
+      if (amount > engine.overrides.maxBet) {
+        socket.emit("bet:rejected", { panel, reason: "above_max", maxBet: engine.overrides.maxBet });
+        return;
+      }
       if (amount > balance) {
         socket.emit("bet:rejected", { panel, reason: "insufficient" });
         return;

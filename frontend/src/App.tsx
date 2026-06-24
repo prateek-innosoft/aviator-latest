@@ -6,12 +6,16 @@ import { HistoryBar } from "./components/HistoryBar";
 import { GameCanvas } from "./components/GameCanvas";
 import { BetPanels } from "./components/BetPanels";
 import { LiveBets } from "./components/LiveBets";
+import { BetErrorToast } from "./components/BetErrorToast";
 import { AdminPanel } from "./admin/AdminPanel";
 import { AuthProvider, useAuth } from "./lib/authContext";
+import { LoadingScreen } from "./components/LoadingScreen";
 
 function GameApp() {
   const init    = useGame((s) => s.init);
   const setAuth = useGame((s) => s.setAuth);
+  const connected = useGame((s) => s.connected);
+  const roundId  = useGame((s) => s.roundId);
   const { session, profile } = useAuth();
 
   // For demo/testing mode: work without user authentication
@@ -38,8 +42,12 @@ function GameApp() {
   }, [init]);
 
   // Show game UI directly in demo/testing mode (no login required)
+  const ready = connected && roundId !== "";
+
   return (
     <div className="flex min-h-full w-full flex-col bg-[#1b1d1f] md:h-screen md:overflow-hidden">
+      <LoadingScreen done={ready} />
+      <BetErrorToast />
       <Header />
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">

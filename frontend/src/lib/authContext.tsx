@@ -6,8 +6,12 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import type { Session } from "@supabase/supabase-js";
-import { supabase } from "./supabase";
+
+interface SimpleSession {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+}
 
 export interface UserProfile {
   id:           string;
@@ -21,7 +25,7 @@ export interface UserProfile {
 }
 
 interface AuthState {
-  session:   Session | null;
+  session:   SimpleSession | null;
   profile:   UserProfile | null;
   loading:   boolean;
   error:     string | null;
@@ -44,7 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     error:   null,
   });
 
-  const fetchProfile = useCallback(async (session: Session): Promise<UserProfile | null> => {
+  const fetchProfile = useCallback(async (session: SimpleSession): Promise<UserProfile | null> => {
     try {
       const res = await fetch("/api/auth/me", {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -58,38 +62,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    const raw = localStorage.getItem("aviator_admin_session");
+    if (!raw) return;
+    const session: SimpleSession = JSON.parse(raw);
     const profile = await fetchProfile(session);
     setState((s) => ({ ...s, profile }));
   }, [fetchProfile]);
 
   useEffect(() => {
-    // Initial session check
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session) {
-        const profile = await fetchProfile(session);
-        setState({ session, profile, loading: false, error: null });
+    // Initial session check from localStorage
+    const raw = localStorage.getItem("aviator_admin_session");
+    if (raw) {
+      const session: SimpleSession = JSON.parse(raw);
+      // Check if token is expired
+      if (session.expires_at * 1000 > Date.now()) {
+        fetchProfile(session).then((profile) => {
+          setState({ session, profile, loading: false, error: null });
+        });
       } else {
+        localStorage.removeItem("aviator_admin_session");
         setState({ session: null, profile: null, loading: false, error: null });
       }
-    });
-
-    // Listen for auth state changes (token refresh, logout, etc.)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (event === "SIGNED_OUT" || !session) {
-          setState({ session: null, profile: null, loading: false, error: null });
-          return;
-        }
-        if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-          const profile = await fetchProfile(session);
-          setState({ session, profile, loading: false, error: null });
-        }
-      }
-    );
-
-    return () => subscription.unsubscribe();
+    } else {
+      setState({ session: null, profile: null, loading: false, error: null });
+    }
   }, [fetchProfile]);
 
   const login = useCallback(
@@ -112,17 +108,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { ok: false, reason: json.reason };
         }
 
-        // Set the Supabase session from the backend-returned tokens
-        const { error } = await supabase.auth.setSession({
+        // Store the session in localStorage (simple token-based auth)
+        const session: SimpleSession = {
           access_token:  json.access_token,
           refresh_token: json.refresh_token,
-        });
-        if (error) {
-          setState((s) => ({ ...s, loading: false, error: "Session error" }));
-          return { ok: false, reason: "session_error" };
-        }
+          expires_at:    json.expires_at,
+        };
+        localStorage.setItem("aviator_admin_session", JSON.stringify(session));
 
-        setState((s) => ({ ...s, loading: false, error: null }));
+        const profile: UserProfile = json.user;
+        setState({ session, profile, loading: false, error: null });
         return { ok: true };
       } catch {
         setState((s) => ({ ...s, loading: false, error: "Network error" }));
@@ -142,7 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
       } catch { /* ignore */ }
     }
-    await supabase.auth.signOut();
+    localStorage.removeItem("aviator_admin_session");
     setState({ session: null, profile: null, loading: false, error: null });
   }, [state.session]);
 
