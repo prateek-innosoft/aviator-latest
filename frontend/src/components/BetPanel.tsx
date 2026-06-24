@@ -30,9 +30,10 @@ export function BetPanel({
 
   const btnRef = useRef<HTMLButtonElement>(null);
 
-  // Local text draft for the auto cash-out field so the user can type freely
-  // (e.g. intermediate states like "1." or deleting decimals) without the
-  // controlled value snapping back on every keystroke. Committed on blur.
+  // Local text drafts so the user can type freely (e.g. intermediate states
+  // like "1." or deleting decimals) without the controlled value snapping
+  // back on every keystroke. Committed on blur / Enter.
+  const [amountDraft, setAmountDraft] = useState<string | null>(null);
   const [acoDraft, setAcoDraft] = useState<string | null>(null);
 
   const sanitizeDecimal = (raw: string) => {
@@ -54,6 +55,13 @@ export function BetPanel({
 
   const clamp = (v: number) => Math.max(betLimits.minBet, Math.min(betLimits.maxBet, Math.round(v * 100) / 100));
   const setAmount = (v: number) => setPanel(index, { amount: clamp(v) });
+
+  const commitAmount = () => {
+    if (amountDraft === null) return;
+    const v = parseFloat(amountDraft);
+    if (!Number.isNaN(v) && v > 0) setAmount(v);
+    setAmountDraft(null);
+  };
 
   // Pulse the cash-out button as the multiplier climbs.
   useEffect(() => {
@@ -162,10 +170,12 @@ export function BetPanel({
               </svg>
             </button>
             <input
-              value={panel.amount.toFixed(2)}
-              onChange={(e) => {
-                const v = parseFloat(e.target.value.replace(/[^0-9.]/g, ""));
-                if (!Number.isNaN(v)) setAmount(v);
+              value={amountDraft ?? panel.amount.toFixed(2)}
+              onFocus={() => setAmountDraft(panel.amount.toFixed(2))}
+              onChange={(e) => setAmountDraft(sanitizeDecimal(e.target.value))}
+              onBlur={commitAmount}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               }}
               inputMode="decimal"
               className="w-full min-w-0 bg-transparent text-center text-[15px] font-bold text-white/55 outline-none max-[380px]:text-[13px]"
