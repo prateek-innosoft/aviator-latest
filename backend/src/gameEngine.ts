@@ -11,7 +11,7 @@ import type {
 } from "./types.js";
 
 const BETTING_MS = 5000;
-const HARD_CAP_MULTIPLIER = 15; // absolute maximum — cannot be overridden by any method
+const HARD_CAP_MULTIPLIER = 130; // absolute maximum — cannot be overridden by any method
 const TICK_MS = 50;
 const CRASH_PAUSE_MS = 3000;
 const GROWTH = 0.16;
@@ -118,30 +118,30 @@ export class GameEngine extends EventEmitter {
 
       // ── Global win/loss mode ─────────────────────────────────────────────
       if (this.overrides.winMode === "win") {
-        // High multiplier capped at HARD_CAP_MULTIPLIER
-        result = Math.round((5 + Math.random() * (HARD_CAP_MULTIPLIER - 5)) * 100) / 100;
+        // Player win: high multiplier in range 100–130×
+        result = Math.round((100 + Math.random() * 30) * 100) / 100;
       } else if (this.overrides.winMode === "loss") {
-        // Always bust before anyone can cash out
-        result = Math.round((1.0 + Math.random() * 0.15) * 100) / 100;
+        // House win: bust at or below 2×
+        result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
       } else {
-        // ── Normal mode: apply globalWinRate bias ────────────────────────────
+        // ── Normal mode (fair): apply globalWinRate bias, max 10× ────────────
         const r = this.overrides.globalWinRate; // 0-1
         if (r >= 0.98) {
-          result = Math.round((5 + Math.random() * (HARD_CAP_MULTIPLIER - 5)) * 100) / 100;
+          result = Math.round((5 + Math.random() * 5) * 100) / 100;
         } else if (r <= 0.02) {
-          result = Math.round((1.0 + Math.random() * 0.15) * 100) / 100;
+          result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
         } else {
           const roll = Math.random();
           if (roll < r) {
-            result = Math.max(base, 2.0);
+            result = Math.min(Math.max(base, 2.0), 10.0);
           } else {
-            result = Math.round((1.0 + Math.random() * 0.5) * 100) / 100;
+            result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
           }
         }
       }
     }
 
-    // ── ABSOLUTE HARD CAP — no path can exceed 15× ───────────────────────
+    // ── ABSOLUTE HARD CAP — no path can exceed 130× ──────────────────────
     return Math.floor(Math.min(result, HARD_CAP_MULTIPLIER) * 100) / 100;
   }
 
@@ -319,7 +319,7 @@ export class GameEngine extends EventEmitter {
       this.crashPoint = Math.round(Math.max(this.crashPoint, highestWin) * 100) / 100;
     }
 
-    // ── ABSOLUTE HARD CAP — enforce 15× ceiling after any per-user override ─
+    // ── ABSOLUTE HARD CAP — enforce 130× ceiling after any per-user override ─
     this.crashPoint = Math.floor(Math.min(this.crashPoint, HARD_CAP_MULTIPLIER) * 100) / 100;
   }
 

@@ -126,7 +126,7 @@ export function GameControls({ token }: { token: string }) {
               type="number"
               step="0.01"
               min="1.01"
-              max="100"
+              max="130"
               value={nextCrash}
               onChange={e => setNextCrash(e.target.value)}
               placeholder="e.g. 5.00 — consumed after 1 round"
@@ -139,7 +139,7 @@ export function GameControls({ token }: { token: string }) {
               type="number"
               step="0.01"
               min="1.01"
-              max="100"
+              max="130"
               value={forcedCrash}
               onChange={e => setForcedCrash(e.target.value)}
               placeholder="e.g. 1.20 — applies permanently until cleared"
