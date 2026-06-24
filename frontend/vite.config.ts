@@ -6,6 +6,7 @@ const backend = process.env.VITE_DEV_BACKEND ?? "http://127.0.0.1:4000";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  appType: "spa",
   server: {
     port: 5173,
     host: true,

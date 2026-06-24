@@ -56,11 +56,6 @@ function GameApp() {
     return <LoginScreen />;
   }
 
-  // Admins see the admin panel instead of the game
-  if (profile?.role === "admin" || profile?.role === "superadmin") {
-    return <AdminPanel />;
-  }
-
   return (
     <div className="flex min-h-full w-full flex-col bg-[#1b1d1f] md:h-screen md:overflow-hidden">
       <Header />
@@ -95,9 +90,10 @@ function GameApp() {
 }
 
 export default function App() {
+  const isAdminPath = window.location.pathname.startsWith("/admin");
   return (
     <AuthProvider>
-      <GameApp />
+      {isAdminPath ? <AdminPanel /> : <GameApp />}
     </AuthProvider>
   );
 }
