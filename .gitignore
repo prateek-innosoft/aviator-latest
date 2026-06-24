@@ -18,11 +18,9 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
-share-link.url
 
 # OS / editor cruft
 .DS_Store
-# Playwright UI tests
-ui-tests/results/
-ui-tests/report/
-ui-tests/specs/**/*.png
+
+# Archived / dev-only content
+_archive/

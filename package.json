@@ -6,26 +6,12 @@
   "scripts": {
     "dev:backend": "npm run dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",
-    "dev:tunnel": "node scripts/share-tunnel.mjs",
-    "dev:share": "concurrently -k -n backend,frontend,tunnel -c blue,green,magenta \"npm run dev:backend\" \"npm run dev:frontend\" \"node scripts/share-tunnel.mjs\"",
-    "share:link": "node scripts/print-share-link.mjs",
-    "test:ui": "playwright test --config ui-tests/playwright.config.ts",
-    "test:ui:fast": "playwright test --config ui-tests/playwright.config.ts",
-    "test:ui:slow": "cross-env SLOW_ONLY=1 playwright test --config ui-tests/playwright.config.ts",
-    "test:ui:full": "cross-env FULL=1 playwright test --config ui-tests/playwright.config.ts",
-    "test:ui:headed": "playwright test --config ui-tests/playwright.config.ts --headed",
-    "test:ui:debug": "playwright test --config ui-tests/playwright.config.ts --debug",
-    "test:ui:report": "playwright show-report ui-tests/report",
-    "test:ui:visual": "cross-env VISUAL=1 playwright test --config ui-tests/playwright.config.ts --grep @visual",
-    "test:ui:update-snapshots": "cross-env VISUAL=1 playwright test --config ui-tests/playwright.config.ts --grep @visual --update-snapshots",
-    "test:ui:install": "playwright install chromium",
-    "test:ui:new": "playwright test --config ui-tests/playwright.config.ts --project=desktop specs/10-animation.spec.ts specs/11-backend-api.spec.ts specs/12-auto-bet.spec.ts specs/13-a11y.spec.ts specs/14-edge-cases.spec.ts",
-    "test:ui:all-fast": "playwright test --config ui-tests/playwright.config.ts --project=desktop",
-    "test:ui:desktop-only": "playwright test --config ui-tests/playwright.config.ts --project=desktop"
+    "dev": "concurrently -k -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:backend": "npm run build --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "build": "npm run build:backend && npm run build:frontend"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.0",
-    "concurrently": "^9.1.2",
-    "cross-env": "^7.0.3"
+    "concurrently": "^9.1.2"
   }
 }
