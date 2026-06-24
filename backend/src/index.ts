@@ -106,9 +106,6 @@ async function getWalletBalance(userId: string): Promise<number | null> {
   return Number(data.balance);
 }
 
-// Persistent demo balances keyed by stable client token (survives socket reconnect).
-const persistentBalances = new Map<string, number>();
-
 // Map from socket.id → authenticated userId (for authenticated sockets).
 const authedSockets = new Map<string, string>();
 
@@ -143,19 +140,12 @@ engine.on("round:crashed", async (p) => {
 });
 
 io.on("connection", (socket) => {
-  // Client may send a stable token so balance persists across page refreshes.
-  let clientToken: string | null = null;
   let authedUserId: string | null = null;
 
-  const getDemoBalance = () =>
-    clientToken != null
-      ? (persistentBalances.get(clientToken) ?? STARTING_BALANCE)
-      : (demoBalances.get(socket.id) ?? STARTING_BALANCE);
-
-  const setDemoBalance = (v: number) => {
-    demoBalances.set(socket.id, v);
-    if (clientToken != null) persistentBalances.set(clientToken, v);
-  };
+  // Demo balance is per session (per socket). Every fresh page load starts at
+  // STARTING_BALANCE so testing always begins from a clean wallet.
+  const getDemoBalance = () => demoBalances.get(socket.id) ?? STARTING_BALANCE;
+  const setDemoBalance = (v: number) => { demoBalances.set(socket.id, v); };
 
   demoBalances.set(socket.id, STARTING_BALANCE);
 
@@ -180,19 +170,9 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Client sends its stable token on connect so balance survives refresh.
-  socket.on("client:token", (token: string) => {
-    if (typeof token !== "string" || token.length < 8) return;
-    clientToken = token;
-    // Restore persistent balance for this client.
-    const saved = persistentBalances.get(token);
-    if (saved != null) {
-      demoBalances.set(socket.id, saved);
-      socket.emit("balance:sync", { balance: saved });
-    } else {
-      persistentBalances.set(token, STARTING_BALANCE);
-    }
-  });
+  // Client still emits a stable token, but demo balances are per-session now,
+  // so we simply acknowledge it without restoring any prior balance.
+  socket.on("client:token", () => {});
 
   socket.on("bet:place", async (payload: PlaceBetPayload) => {
     const { panel, amount, userId } = payload;
@@ -363,7 +343,6 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     demoBalances.delete(socket.id);
     authedSockets.delete(socket.id);
-    // Note: persistentBalances is intentionally kept — it survives reconnects.
   });
 });
 
