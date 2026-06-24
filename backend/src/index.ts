@@ -172,10 +172,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Client still emits a stable token, but demo balances are per-session now,
-  // so we simply acknowledge it without restoring any prior balance.
-  socket.on("client:token", () => {});
-
   socket.on("bet:place", async (payload: PlaceBetPayload) => {
     const { panel, amount, userId } = payload;
 

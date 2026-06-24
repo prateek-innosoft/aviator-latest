@@ -26,16 +26,6 @@ export interface AdminOverrides {
   forcedCrash:    number | null;  // crash every round at this point
   minBet:         number;
   maxBet:         number;
-  globalWinRate:  number;         // 0-1, biases crash point in normal mode
-}
-
-export interface UserWinControl {
-  win_mode:    WinMode;
-  win_rate:    number;
-  min_cashout: number | null;
-  max_cashout: number | null;
-  min_bet:     number | null;
-  max_bet:     number | null;
 }
 
 type BotBet = LiveBet & { target: number };
@@ -73,26 +63,14 @@ export class GameEngine extends EventEmitter {
     forcedCrash:    null,
     minBet:         1,
     maxBet:         50000,
-    globalWinRate:  0.5,
   };
-
-  // Per-user win control cache (userId → control)
-  private userWinControls = new Map<string, UserWinControl>();
 
   setNextCrashOverride(v: number | null) { this.overrides.nextCrashPoint = v; }
   setWinMode(m: WinMode)                { this.overrides.winMode = m; }
   setForcedCrash(v: number | null)      { this.overrides.forcedCrash = v; }
-  setGlobalWinRate(r: number)           { this.overrides.globalWinRate = Math.max(0, Math.min(1, r)); }
   setBetLimits(min?: number, max?: number) {
     if (min !== undefined) this.overrides.minBet = min;
     if (max !== undefined) this.overrides.maxBet = max;
-  }
-  setUserWinControl(userId: string, ctrl: UserWinControl | null) {
-    if (ctrl === null) this.userWinControls.delete(userId);
-    else this.userWinControls.set(userId, ctrl);
-  }
-  getUserWinControl(userId: string): UserWinControl | null {
-    return this.userWinControls.get(userId) ?? null;
   }
 
   /** Find an active bet by socket id and panel. Used by index.ts for cancel amount lookup. */
@@ -114,8 +92,6 @@ export class GameEngine extends EventEmitter {
       this.overrides.nextCrashPoint = null; // consume once
     }
     else {
-      const base = crashPointFromSeed(this.seed);
-
       // ── Global win/loss mode ─────────────────────────────────────────────
       if (this.overrides.winMode === "win") {
         // Player win: high multiplier in range 100–130×
@@ -165,38 +141,12 @@ export class GameEngine extends EventEmitter {
     }
   }
 
-  /** Load all per-user win controls from DB into the in-memory map. */
-  async loadUserWinControls() {
-    try {
-      const { data, error } = await supabase
-        .from("user_win_controls")
-        .select("user_id, win_mode, win_rate, min_cashout, max_cashout, min_bet, max_bet");
-      if (error) {
-        console.warn("[GameEngine] Failed to load user win controls:", error.message);
-        return;
-      }
-      for (const row of data ?? []) {
-        this.userWinControls.set(row.user_id as string, {
-          win_mode:    row.win_mode as WinMode,
-          win_rate:    row.win_rate as number,
-          min_cashout: row.min_cashout as number | null,
-          max_cashout: row.max_cashout as number | null,
-          min_bet:     row.min_bet as number | null,
-          max_bet:     row.max_bet as number | null,
-        });
-      }
-      console.log(`[GameEngine] Loaded ${this.userWinControls.size} user win controls.`);
-    } catch (err) {
-      console.warn("[GameEngine] Exception loading user win controls:", err);
-    }
-  }
-
   /** Load admin_controls from DB and apply to overrides. */
   async loadAdminControls() {
     try {
       const { data, error } = await supabase
         .from("admin_controls")
-        .select("win_mode, house_edge, min_bet, max_bet, forced_crash, next_crash_point")
+        .select("win_mode, min_bet, max_bet, forced_crash, next_crash_point")
         .eq("id", 1)
         .single();
       if (error || !data) {
@@ -204,12 +154,11 @@ export class GameEngine extends EventEmitter {
         return;
       }
       this.overrides.winMode        = (data.win_mode as WinMode) ?? "normal";
-      this.overrides.globalWinRate  = typeof data.house_edge === "number" ? data.house_edge : 0.5;
       this.overrides.minBet         = typeof data.min_bet === "number" ? data.min_bet : 1;
       this.overrides.maxBet         = typeof data.max_bet === "number" ? data.max_bet : 50000;
       this.overrides.forcedCrash    = (data.forced_crash as number | null) ?? null;
       this.overrides.nextCrashPoint = (data.next_crash_point as number | null) ?? null;
-      console.log(`[GameEngine] Loaded admin controls: winMode=${this.overrides.winMode} winRate=${this.overrides.globalWinRate}`);
+      console.log(`[GameEngine] Loaded admin controls: winMode=${this.overrides.winMode}`);
     } catch (err) {
       console.warn("[GameEngine] Exception loading admin controls:", err);
     }
@@ -219,7 +168,6 @@ export class GameEngine extends EventEmitter {
     await Promise.all([
       this.loadHistory(),
       this.loadAdminControls(),
-      this.loadUserWinControls(),
     ]);
     this.beginBetting();
   }
@@ -268,56 +216,10 @@ export class GameEngine extends EventEmitter {
     }, 100);
   }
 
-  /** Recompute crash point taking per-user win controls into account for active bets. */
-  private applyPerUserOverrides() {
-    let lowestLoss: number | null = null;   // loss-mode users force crash down
-    let highestWin:  number | null = null;  // win-mode users force crash up
-
-    for (const bet of this.playerBets) {
-      if (!bet.userId) continue;
-      const ctrl = this.userWinControls.get(bet.userId);
-      if (!ctrl) continue;
-
-      if (ctrl.win_mode === "win") {
-        // Desired crash: at least min_cashout (or 5× default), capped at HARD_CAP_MULTIPLIER
-        const target = Math.min(ctrl.min_cashout ?? 5, HARD_CAP_MULTIPLIER);
-        if (highestWin === null || target > highestWin) highestWin = target;
-      } else if (ctrl.win_mode === "loss") {
-        // Desired crash: at most max_cashout (or 1.1× default) so they can't cash out
-        const target = ctrl.max_cashout ?? 1.1;
-        if (lowestLoss === null || target < lowestLoss) lowestLoss = target;
-      } else {
-        // normal mode — apply win_rate bias for this player
-        const r = ctrl.win_rate; // 0-1
-        if (r >= 0.98) {
-          const v = Math.min(5 + Math.random() * (HARD_CAP_MULTIPLIER - 5), HARD_CAP_MULTIPLIER);
-          if (highestWin === null || v > highestWin) highestWin = v;
-        } else if (r <= 0.02) {
-          const v = 1.0 + Math.random() * 0.15;
-          if (lowestLoss === null || v < lowestLoss) lowestLoss = v;
-        }
-        // mid-range rates: let global crash point stand
-      }
-    }
-
-    // Loss mode takes priority (house wins), then win mode
-    if (lowestLoss !== null) {
-      this.crashPoint = Math.round(Math.min(this.crashPoint, lowestLoss) * 100) / 100;
-    } else if (highestWin !== null) {
-      this.crashPoint = Math.round(Math.max(this.crashPoint, highestWin) * 100) / 100;
-    }
-
-    // ── ABSOLUTE HARD CAP — enforce 130× ceiling after any per-user override ─
-    this.crashPoint = Math.floor(Math.min(this.crashPoint, HARD_CAP_MULTIPLIER) * 100) / 100;
-  }
-
   private async beginFlying() {
     this.phase = "flying";
     this.multiplier = 1.0;
     this.roundStart = Date.now();
-
-    // Adjust crash point for any per-user controls on active bets
-    this.applyPerUserOverrides();
 
     // Transition round to 'flying' in Supabase.
     if (this.supabaseRoundId) {

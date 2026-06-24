@@ -5,10 +5,6 @@ export function fmt(n: number): string {
   });
 }
 
-export function fmtMult(n: number): string {
-  return `${n.toFixed(2)}x`;
-}
-
 /** Colour class for a multiplier pill based on its value tier. */
 export function multTier(n: number): "low" | "mid" | "high" {
   if (n < 2) return "low";

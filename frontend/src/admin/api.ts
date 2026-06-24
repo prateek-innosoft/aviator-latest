@@ -2,19 +2,12 @@
 
 export interface AdminControls {
   id: number;
-  house_edge: number;
   min_bet: number;
   max_bet: number;
   next_crash_point: number | null;
   win_mode: "normal" | "win" | "loss";
   forced_crash: number | null;
   updated_at: string;
-}
-
-export interface AdminStats {
-  rounds_today: number;
-  avg_crash: number;
-  recent_rounds: { id: string; crash_point: number; status: string; ended_at: string }[];
 }
 
 async function req<T>(
@@ -53,7 +46,4 @@ export const adminApi = {
 
   patchControls: (token: string, body: Partial<AdminControls>) =>
     req<{ ok: true }>("/api/admin/controls", "PATCH", token, body),
-
-  getStats: (token: string) =>
-    req<{ ok: true; stats: AdminStats }>("/api/admin/stats", "GET", token),
 };

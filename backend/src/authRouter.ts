@@ -204,7 +204,7 @@ authRouter.get(
       const { data, error } = await supabase
         .from("config")
         .select("key, value")
-        .in("key", ["house_edge", "min_bet", "max_bet"]);
+        .in("key", ["min_bet", "max_bet"]);
       if (!error && data) {
         for (const row of data) cfg[row.key] = Number(row.value);
       }
@@ -218,7 +218,6 @@ authRouter.get(
       ok: true,
       controls: {
         id: 1,
-        house_edge:       cfg.house_edge ?? engine?.overrides.globalWinRate ?? 0.5,
         min_bet:          cfg.min_bet ?? engine?.overrides.minBet ?? 1,
         max_bet:          cfg.max_bet ?? engine?.overrides.maxBet ?? 50000,
         next_crash_point: engine?.overrides.nextCrashPoint ?? null,
@@ -237,7 +236,6 @@ authRouter.patch(
   requireAdmin,
   async (req: Request, res: Response) => {
     const ControlsSchema = z.object({
-      house_edge:        z.number().min(0).max(1).optional(),
       min_bet:           z.number().min(0.01).max(1_000_000).optional(),
       max_bet:           z.number().min(1).max(10_000_000).optional(),
       next_crash_point:  z.number().min(1.01).max(130).nullable().optional(),
@@ -252,7 +250,6 @@ authRouter.patch(
 
     // Update config key-value rows for the fields we support.
     const updates: { key: string; value: number }[] = [];
-    if (parse.data.house_edge !== undefined) updates.push({ key: "house_edge", value: parse.data.house_edge });
     if (parse.data.min_bet    !== undefined) updates.push({ key: "min_bet",    value: parse.data.min_bet });
     if (parse.data.max_bet    !== undefined) updates.push({ key: "max_bet",    value: parse.data.max_bet });
 
@@ -285,9 +282,6 @@ authRouter.patch(
             maxBet: globalThis.__gameEngine.overrides.maxBet,
           });
         }
-      }
-      if (parse.data.house_edge !== undefined) {
-        globalThis.__gameEngine.setGlobalWinRate(parse.data.house_edge);
       }
     }
     res.json({ ok: true });

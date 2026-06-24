@@ -220,7 +220,6 @@ export function RateControlPanel({ token }: { token: string }) {
       const win_mode = mode === 100 ? "win" : mode === 0 ? "loss" : "normal";
       const patch: Partial<AdminControls> = {
         win_mode:   win_mode as "normal" | "win" | "loss",
-        house_edge: mode / 100,
         min_bet:    Number(minB),
         max_bet:    Number(maxB),
       };
