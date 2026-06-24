@@ -327,40 +327,16 @@ function Previous({
     return combined;
   }, [bets]);
 
-  const total    = sorted.length;
-  const settled  = sorted.filter((b) => b.cashedOut).length;
-  const totalWinAmt = sorted.reduce((s, b) => s + (b.win ?? 0), 0);
-
   return (
     <>
       <div className="shrink-0 rounded-2xl bg-[#15171a] px-3.5 py-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-[11px] text-white/45">Round Result</div>
-            <div
-              className={`text-[22px] font-extrabold leading-tight ${
-                result != null ? tierColor[multTier(result)] : "text-white"
-              }`}
-            >
-              {result != null ? `${result.toFixed(2)}x` : "—"}
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-[18px] font-extrabold leading-none text-white">
-              {fmt(totalWinAmt)}
-            </div>
-            <div className="mt-1 text-[11px] text-white/40">Total win {currency}</div>
-          </div>
-        </div>
-        <div className="mt-2 flex items-center justify-between text-[11px] text-white/45">
-          <span><span className="font-bold text-white">{settled}</span>/{total} cashed out</span>
-          <span className="text-white/30">{Math.round(settled / Math.max(total,1) * 100)}% win rate</span>
-        </div>
-        <div className="mt-1.5 h-[3px] w-full overflow-hidden rounded-full bg-[#26292c]">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-[#1f9e2c] to-[#3fc94a] transition-[width] duration-500"
-            style={{ width: `${Math.max(0.04, settled / Math.max(total,1)) * 100}%` }}
-          />
+        <div className="text-[11px] text-white/45">Round Result</div>
+        <div
+          className={`text-[22px] font-extrabold leading-tight ${
+            result != null ? tierColor[multTier(result)] : "text-white"
+          }`}
+        >
+          {result != null ? `${result.toFixed(2)}x` : "—"}
         </div>
       </div>
 
@@ -460,33 +436,9 @@ function Top({
     return arr;
   }, [entries, metric]);
 
-  const topResult = sorted[0]?.result ?? 0;
-  const topWin    = sorted[0]?.win    ?? 0;
-
   return (
     <>
       <div className="shrink-0 space-y-1.5">
-        {/* Summary strip */}
-        <div className="flex gap-1.5">
-          <div className="flex-1 rounded-2xl bg-[#15171a] px-3 py-2 text-center">
-            <div className="text-[11px] text-white/40">Best X</div>
-            <div className={`text-[15px] font-extrabold tabular-nums ${tierColor[multTier(topResult)]}`}>
-              {topResult.toFixed(2)}x
-            </div>
-          </div>
-          <div className="flex-1 rounded-2xl bg-[#15171a] px-3 py-2 text-center">
-            <div className="text-[11px] text-white/40">Top Win</div>
-            <div className="text-[15px] font-extrabold tabular-nums text-white">
-              {fmt(topWin)}
-            </div>
-          </div>
-          <div className="flex-1 rounded-2xl bg-[#15171a] px-3 py-2 text-center">
-            <div className="text-[11px] text-white/40">Players</div>
-            <div className="text-[15px] font-extrabold tabular-nums text-white">
-              {sorted.length}
-            </div>
-          </div>
-        </div>
         <SubTabs items={topMetricTabs} active={metric} onChange={onMetric} />
         <SubTabs items={topPeriodTabs} active={period} onChange={onPeriod} />
       </div>

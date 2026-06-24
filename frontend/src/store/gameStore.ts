@@ -68,7 +68,7 @@ export const useGame = create<GameState>((set, get) => ({
   bets: [],
   totalBets: 0,
   totalWin: 0,
-  balance: 50000,
+  balance: 1000,
   currency: "ZAR",
   crashFlash: null,
   flyingStartedAt: null,

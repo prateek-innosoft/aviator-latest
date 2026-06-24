@@ -12,7 +12,7 @@ import type { CancelBetPayload, CashOutPayload, PlaceBetPayload } from "./types.
 
 const PORT = Number(process.env.PORT ?? 4000);
 const HOST = process.env.HOST ?? "0.0.0.0";
-const STARTING_BALANCE = Number(process.env.STARTING_BALANCE ?? 50000);
+const STARTING_BALANCE = Number(process.env.STARTING_BALANCE ?? 1000);
 
 function lanIpv4(): string[] {
   const out: string[] = [];
