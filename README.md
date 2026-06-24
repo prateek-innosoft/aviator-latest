@@ -46,36 +46,9 @@ npm run dev
 
 Then open http://localhost:5173.
 
-### Share with friends anywhere in the world
+> Vite proxies `/socket.io` and `/api` through port 5173, so only the frontend URL is needed.
+> Override the backend URL with `VITE_SERVER_URL` for custom production deploys.
 
-Your LAN IP (`http://10.187.150.57:5173`) only works on the **same Wi‑Fi**. For friends in other cities/countries, use a **public tunnel**:
-
-```bash
-# From repo root — starts backend, frontend, and prints a worldwide link
-npm run dev:share
-```
-
-Or if servers are already running:
-
-```bash
-npm run dev:tunnel
-```
-
-You will get a link like `https://something.trycloudflare.com` — send **that** to Aremiena or anyone else. Keep the terminal open while they play. The URL changes each time you restart the tunnel.
-
-> Vite proxies `/socket.io` and `/api` through port 5173, so friends only need the one public link.
-
-> The frontend uses the same origin for WebSockets in dev. Override with
-> `VITE_SERVER_URL` only for custom production deploys.
-
-## Tests
-
-Core engine math (bet/cashout/phase guards):
-
-```bash
-cd backend
-npx tsx src/engine.test.ts
-```
 
 ## Production build
 

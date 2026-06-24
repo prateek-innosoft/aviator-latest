@@ -21,6 +21,3 @@ npm-debug.log*
 
 # OS / editor cruft
 .DS_Store
-
-# Archived / dev-only content
-_archive/

@@ -105,7 +105,6 @@ avitor/
 │   ├── vite.config.ts            # Dev proxy to backend
 │   └── package.json
 ├── docs/PROJECT_DOCUMENTATION.md # This file
-├── package.json                  # Root workspace
 └── README.md
 ```
 
@@ -1280,8 +1279,9 @@ Uses `requestAnimationFrame` for 60fps. Canvas auto-resizes to container.
 ## 22. Building & Deploying
 
 ```bash
-# Development (from root)
-npm run dev                    # both backend + frontend concurrently
+# Development — two terminals
+cd backend && npm run dev      # → http://localhost:4000
+cd frontend && npm run dev     # → http://localhost:5173
 
 # Production
 cd backend && npm run build    # tsc → dist/
