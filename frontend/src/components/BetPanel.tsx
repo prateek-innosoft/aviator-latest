@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { gsap } from "gsap";
 import { useGame } from "../store/gameStore";
 import { fmt } from "../lib/format";
@@ -30,6 +30,28 @@ export function BetPanel({
   const cashOut = useGame((s) => s.cashOut);
 
   const btnRef = useRef<HTMLButtonElement>(null);
+
+  // Local text draft for the auto cash-out field so the user can type freely
+  // (e.g. intermediate states like "1." or deleting decimals) without the
+  // controlled value snapping back on every keystroke. Committed on blur.
+  const [acoDraft, setAcoDraft] = useState<string | null>(null);
+
+  const sanitizeDecimal = (raw: string) => {
+    let s = raw.replace(/[^0-9.]/g, "");
+    const dot = s.indexOf(".");
+    if (dot !== -1) s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, "");
+    return s;
+  };
+
+  const commitAco = () => {
+    const v = parseFloat(acoDraft ?? "");
+    setPanel(index, {
+      autoCashOutValue: Number.isNaN(v)
+        ? panel.autoCashOutValue
+        : Math.max(1.01, Math.round(v * 100) / 100),
+    });
+    setAcoDraft(null);
+  };
 
   const clamp = (v: number) => Math.max(MIN, Math.min(MAX, Math.round(v * 100) / 100));
   const setAmount = (v: number) => setPanel(index, { amount: clamp(v) });
@@ -272,14 +294,12 @@ export function BetPanel({
               }`}
             >
               <input
-                value={panel.autoCashOutValue.toFixed(2)}
+                value={acoDraft ?? panel.autoCashOutValue.toFixed(2)}
                 disabled={!panel.autoCashOut}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value.replace(/[^0-9.]/g, ""));
-                  if (!Number.isNaN(v))
-                    setPanel(index, {
-                      autoCashOutValue: Math.max(1.01, v),
-                    });
+                onChange={(e) => setAcoDraft(sanitizeDecimal(e.target.value))}
+                onBlur={commitAco}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                 }}
                 inputMode="decimal"
                 className="w-11 bg-transparent text-right text-[12px] font-bold text-white outline-none disabled:cursor-not-allowed"
