@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 
 const BETTING_MS = 5000;
+const HARD_CAP_MULTIPLIER = 15; // absolute maximum — cannot be overridden by any method
 const TICK_MS = 50;
 const CRASH_PAUSE_MS = 3000;
 const GROWTH = 0.16;
@@ -101,51 +102,47 @@ export class GameEngine extends EventEmitter {
 
   /** Compute the effective crash point after applying admin overrides. */
   private computeCrashPoint(): number {
+    let result: number;
+
     // Forced crash wins over everything
-    if (this.overrides.forcedCrash !== null) return this.overrides.forcedCrash;
+    if (this.overrides.forcedCrash !== null) {
+      result = this.overrides.forcedCrash;
+    }
     // One-shot next round override
-    if (this.overrides.nextCrashPoint !== null) {
-      const v = this.overrides.nextCrashPoint;
+    else if (this.overrides.nextCrashPoint !== null) {
+      result = this.overrides.nextCrashPoint;
       this.overrides.nextCrashPoint = null; // consume once
-      return v;
+    }
+    else {
+      const base = crashPointFromSeed(this.seed);
+
+      // ── Global win/loss mode ─────────────────────────────────────────────
+      if (this.overrides.winMode === "win") {
+        // High multiplier capped at HARD_CAP_MULTIPLIER
+        result = Math.round((5 + Math.random() * (HARD_CAP_MULTIPLIER - 5)) * 100) / 100;
+      } else if (this.overrides.winMode === "loss") {
+        // Always bust before anyone can cash out
+        result = Math.round((1.0 + Math.random() * 0.15) * 100) / 100;
+      } else {
+        // ── Normal mode: apply globalWinRate bias ────────────────────────────
+        const r = this.overrides.globalWinRate; // 0-1
+        if (r >= 0.98) {
+          result = Math.round((5 + Math.random() * (HARD_CAP_MULTIPLIER - 5)) * 100) / 100;
+        } else if (r <= 0.02) {
+          result = Math.round((1.0 + Math.random() * 0.15) * 100) / 100;
+        } else {
+          const roll = Math.random();
+          if (roll < r) {
+            result = Math.max(base, 2.0);
+          } else {
+            result = Math.round((1.0 + Math.random() * 0.5) * 100) / 100;
+          }
+        }
+      }
     }
 
-    const base = crashPointFromSeed(this.seed);
-
-    // ── Global win/loss mode ─────────────────────────────────────────────
-    if (this.overrides.winMode === "win") {
-      // Guarantee a very high multiplier: 10x – 200x range
-      return Math.round((10 + Math.random() * 190) * 100) / 100;
-    }
-    if (this.overrides.winMode === "loss") {
-      // Always bust before anyone can cash out
-      return Math.round((1.0 + Math.random() * 0.15) * 100) / 100;
-    }
-
-    // ── Normal mode: apply globalWinRate bias ────────────────────────────
-    // globalWinRate = 0   → always bust (1.00–1.10×)
-    // globalWinRate = 0.5 → provably fair (default)
-    // globalWinRate = 1   → always high (10×+)
-    const r = this.overrides.globalWinRate; // 0-1
-    if (r >= 0.98) {
-      // Essentially "always win" — return high multiplier
-      return Math.round((10 + Math.random() * 190) * 100) / 100;
-    }
-    if (r <= 0.02) {
-      // Essentially "always lose"
-      return Math.round((1.0 + Math.random() * 0.15) * 100) / 100;
-    }
-    // Blend: pick a random value and accept it with probability proportional
-    // to how far win rate is from 0.5.  Simple implementation: roll dice —
-    // if rand < r, return a "winning" crash point (>2×), else a "losing" one.
-    const roll = Math.random();
-    if (roll < r) {
-      // winning round — use provably fair base but floor at 2×
-      return Math.max(base, 2.0);
-    } else {
-      // losing round — bust early
-      return Math.round((1.0 + Math.random() * 0.5) * 100) / 100;
-    }
+    // ── ABSOLUTE HARD CAP — no path can exceed 15× ───────────────────────
+    return Math.floor(Math.min(result, HARD_CAP_MULTIPLIER) * 100) / 100;
   }
 
   constructor() {
@@ -294,8 +291,8 @@ export class GameEngine extends EventEmitter {
       if (!ctrl) continue;
 
       if (ctrl.win_mode === "win") {
-        // Desired crash: at least min_cashout (or 10× default) so they can cash out
-        const target = ctrl.min_cashout ?? 10;
+        // Desired crash: at least min_cashout (or 5× default), capped at HARD_CAP_MULTIPLIER
+        const target = Math.min(ctrl.min_cashout ?? 5, HARD_CAP_MULTIPLIER);
         if (highestWin === null || target > highestWin) highestWin = target;
       } else if (ctrl.win_mode === "loss") {
         // Desired crash: at most max_cashout (or 1.1× default) so they can't cash out
@@ -305,7 +302,7 @@ export class GameEngine extends EventEmitter {
         // normal mode — apply win_rate bias for this player
         const r = ctrl.win_rate; // 0-1
         if (r >= 0.98) {
-          const v = 10 + Math.random() * 90;
+          const v = Math.min(5 + Math.random() * (HARD_CAP_MULTIPLIER - 5), HARD_CAP_MULTIPLIER);
           if (highestWin === null || v > highestWin) highestWin = v;
         } else if (r <= 0.02) {
           const v = 1.0 + Math.random() * 0.15;
@@ -321,6 +318,9 @@ export class GameEngine extends EventEmitter {
     } else if (highestWin !== null) {
       this.crashPoint = Math.round(Math.max(this.crashPoint, highestWin) * 100) / 100;
     }
+
+    // ── ABSOLUTE HARD CAP — enforce 15× ceiling after any per-user override ─
+    this.crashPoint = Math.floor(Math.min(this.crashPoint, HARD_CAP_MULTIPLIER) * 100) / 100;
   }
 
   private async beginFlying() {

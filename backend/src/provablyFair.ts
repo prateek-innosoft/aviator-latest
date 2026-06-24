@@ -12,7 +12,7 @@ import crypto from "node:crypto";
  */
 
 const HOUSE_EDGE = 0.01; // 1%
-const MAX_MULTIPLIER = 1000;
+const MAX_MULTIPLIER = 15;   // hard cap — cannot exceed 15×
 
 export interface RoundSeed {
   seed: string;

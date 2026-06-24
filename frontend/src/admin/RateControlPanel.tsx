@@ -349,9 +349,9 @@ function UserDrawer({ user, token, onClose, onSaved }: {
             <p className="mb-3 text-[11px] font-bold uppercase tracking-widest text-gray-400">Crash Point Range</p>
             <p className="mb-3 text-[11px] text-gray-400">The plane will crash between these two multipliers for this user.</p>
             <div className="grid grid-cols-2 gap-3">
-              <NumStepper label="Minimum ×" value={minCrash} onChange={setMinCrash} min={1.01} max={99} step={0.1}
+              <NumStepper label="Minimum ×" value={minCrash} onChange={setMinCrash} min={1.01} max={15} step={0.1}
                 hint="crash always at or above" />
-              <NumStepper label="Maximum ×" value={maxCrash} onChange={setMaxCrash} min={1.01} max={100} step={0.1}
+              <NumStepper label="Maximum ×" value={maxCrash} onChange={setMaxCrash} min={1.01} max={15} step={0.1}
                 hint="crash always at or below" />
             </div>
           </div>

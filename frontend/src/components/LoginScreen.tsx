@@ -75,6 +75,7 @@ export function LoginScreen() {
                   disabled={busy}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
+                  onInput={(e) => setEmail((e.target as HTMLInputElement).value)}
                   placeholder="you@example.com"
                   data-testid="login-email"
                   className="w-full rounded-xl border border-white/10 bg-[#1e2024] py-3 pl-10 pr-4 text-sm text-white placeholder-white/25 outline-none transition focus:border-[#e8173a]/60 focus:ring-1 focus:ring-[#e8173a]/30 disabled:opacity-50"
@@ -102,6 +103,7 @@ export function LoginScreen() {
                   disabled={busy}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
                   placeholder="••••••••"
                   data-testid="login-password"
                   className="w-full rounded-xl border border-white/10 bg-[#1e2024] py-3 pl-10 pr-11 text-sm text-white placeholder-white/25 outline-none transition focus:border-[#e8173a]/60 focus:ring-1 focus:ring-[#e8173a]/30 disabled:opacity-50"
@@ -147,7 +149,7 @@ export function LoginScreen() {
             {/* Submit */}
             <button
               type="submit"
-              disabled={busy || !email || !password}
+              disabled={busy}
               data-testid="login-submit"
               className="relative mt-2 flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-gradient-to-r from-[#e8173a] to-[#ff4d6d] py-3.5 text-sm font-bold text-white shadow-[0_4px_24px_rgba(232,23,58,0.35)] transition hover:shadow-[0_4px_32px_rgba(232,23,58,0.5)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >

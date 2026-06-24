@@ -384,9 +384,9 @@ authRouter.patch(
       house_edge:        z.number().min(0).max(1).optional(),
       min_bet:           z.number().min(0.01).max(1_000_000).optional(),
       max_bet:           z.number().min(1).max(10_000_000).optional(),
-      next_crash_point:  z.number().min(1.01).max(100).nullable().optional(),
+      next_crash_point:  z.number().min(1.01).max(15).nullable().optional(),
       win_mode:          z.enum(["normal", "win", "loss"]).optional(),
-      forced_crash:      z.number().min(1.01).max(100).nullable().optional(),
+      forced_crash:      z.number().min(1.01).max(15).nullable().optional(),
     });
     const parse = ControlsSchema.safeParse(req.body);
     if (!parse.success) {
@@ -449,8 +449,8 @@ authRouter.put(
     const WinControlSchema = z.object({
       win_mode:    z.enum(["normal", "win", "loss"]).default("normal"),
       win_rate:    z.number().min(0).max(1).default(0.5),
-      min_cashout: z.number().min(1.01).max(100).nullable().default(null),
-      max_cashout: z.number().min(1.01).max(100).nullable().default(null),
+      min_cashout: z.number().min(1.01).max(15).nullable().default(null),
+      max_cashout: z.number().min(1.01).max(15).nullable().default(null),
       min_bet:     z.number().min(0.01).nullable().default(null),
       max_bet:     z.number().min(1).nullable().default(null),
       notes:       z.string().max(500).nullable().default(null),

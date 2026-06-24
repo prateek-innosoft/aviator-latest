@@ -139,7 +139,7 @@ export function WinControls({ user, token, onBack }: { user: AdminUser; token: s
             type="number"
             step="0.01"
             min="1.01"
-            max="100"
+            max="15"
             value={minCashout}
             onChange={e => setMinCashout(e.target.value)}
             placeholder="e.g. 2.00 — crash never below 2×"
@@ -149,7 +149,7 @@ export function WinControls({ user, token, onBack }: { user: AdminUser; token: s
             type="number"
             step="0.01"
             min="1.01"
-            max="100"
+            max="15"
             value={maxCashout}
             onChange={e => setMaxCashout(e.target.value)}
             placeholder="e.g. 1.50 — crash never above 1.5×"

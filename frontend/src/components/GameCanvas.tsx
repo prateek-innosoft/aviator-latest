@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { useGame } from "../store/gameStore";
+import { useAuth } from "../lib/authContext";
 import { Plane } from "../assets/plane";
 import { Avatar } from "./Avatar";
 
@@ -72,6 +73,8 @@ export function GameCanvas() {
   const crashFlash = useGame((s) => s.crashFlash);
   const bets = useGame((s) => s.bets);
   const lastWinToast = useGame((s) => s.lastWinToast);
+  const { profile } = useAuth();
+  const isFunMode = !profile;
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -311,12 +314,14 @@ export function GameCanvas() {
         }}
       />
 
-      {/* FUN MODE banner */}
-      <div className="absolute left-0 right-0 top-0 z-20">
-        <div className="mx-auto w-full bg-gradient-to-b from-[#d99719] to-[#c37a02] py-[3px] text-center text-[10px] font-semibold tracking-[0.16em] text-white/95 shadow-sm sm:text-[11px]">
-          FUN MODE
+      {/* FUN MODE banner — only shown for unauthenticated/demo users */}
+      {isFunMode && (
+        <div className="absolute left-0 right-0 top-0 z-20">
+          <div className="mx-auto w-full bg-gradient-to-b from-[#d99719] to-[#c37a02] py-[3px] text-center text-[10px] font-semibold tracking-[0.16em] text-white/95 shadow-sm sm:text-[11px]">
+            FUN MODE
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Curve canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 z-10" />
