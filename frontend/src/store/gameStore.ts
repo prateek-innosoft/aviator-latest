@@ -46,6 +46,10 @@ interface GameState {
   init: () => void;
 }
 
+function sumBetWins(bets: LiveBet[]): number {
+  return Math.round(bets.reduce((acc, b) => acc + (b.win ?? 0), 0) * 100) / 100;
+}
+
 function defaultPanel(amount: number): PanelState {
   return {
     mode: "bet",
@@ -252,13 +256,15 @@ export const useGame = create<GameState>((set, get) => ({
         flyingStartedAt: Date.now(),
         bets: st.bets,
         totalBets: st.totalBets,
+        totalWin: st.totalWin,
       });
     });
 
     socket.on(
       "tick:multiplier",
-      (p: { multiplier: number; bets: LiveBet[] }) => {
-        set({ multiplier: p.multiplier, bets: p.bets });
+      (p: { multiplier: number; bets: LiveBet[]; totalWin?: number }) => {
+        const totalWin = p.totalWin ?? sumBetWins(p.bets);
+        set({ multiplier: p.multiplier, bets: p.bets, totalWin });
 
         // Auto cash-out handling (auto tab only, once per round).
         const s = get();

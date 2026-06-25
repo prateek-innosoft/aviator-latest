@@ -119,7 +119,6 @@ export function LiveBets() {
   const bets = useGame((s) => s.bets);
   const history = useGame((s) => s.history);
   const currency = useGame((s) => s.currency);
-  const totalWin = useGame((s) => s.totalWin);
   const connected = useGame((s) => s.connected);
   const roundId = useGame((s) => s.roundId);
   const ready = connected && roundId !== "";
@@ -152,7 +151,7 @@ export function LiveBets() {
       </div>
 
       {tab === "All Bets" && (
-        <AllBets bets={bets} currency={currency} totalWin={totalWin} />
+        <AllBets bets={bets} currency={currency} />
       )}
       {tab === "Previous" && (
         <Previous
@@ -182,11 +181,9 @@ export function LiveBets() {
 function AllBets({
   bets,
   currency,
-  totalWin,
 }: {
   bets: LiveBet[];
   currency: string;
-  totalWin: number;
 }) {
   const sorted = useMemo(
     () =>
@@ -195,6 +192,11 @@ function AllBets({
         if (!a.cashedOut && b.cashedOut) return 1;
         return b.bet - a.bet;
       }),
+    [bets],
+  );
+
+  const totalWin = useMemo(
+    () => Math.round(bets.reduce((acc, b) => acc + (b.win ?? 0), 0) * 100) / 100,
     [bets],
   );
 

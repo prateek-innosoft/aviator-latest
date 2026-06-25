@@ -235,18 +235,24 @@ export class GameEngine extends EventEmitter {
       if (this.multiplier >= this.crashPoint) {
         this.multiplier = this.crashPoint;
         this.resolveBots(true);
+        const bets = this.allBets();
+        const totalWin = bets.reduce((acc, b) => acc + (b.win ?? 0), 0);
         this.emit("tick:multiplier", {
           multiplier: this.multiplier,
-          bets: this.allBets(),
+          bets,
+          totalWin: Math.round(totalWin * 100) / 100,
         });
         this.beginCrash();
         return;
       }
 
       this.resolveBots(false);
+      const bets = this.allBets();
+      const totalWin = bets.reduce((acc, b) => acc + (b.win ?? 0), 0);
       this.emit("tick:multiplier", {
         multiplier: this.multiplier,
-        bets: this.allBets(),
+        bets,
+        totalWin: Math.round(totalWin * 100) / 100,
       });
     }, TICK_MS);
   }
