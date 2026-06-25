@@ -7,7 +7,7 @@ import rateLimit from "express-rate-limit";
 import { Server } from "socket.io";
 import { GameEngine } from "./gameEngine.js";
 import { supabase } from "./supabaseClient.js";
-import { authRouter, requireAuth, type AuthedRequest } from "./authRouter.js";
+import { authRouter, requireAuth, verifyToken, type AuthedRequest } from "./authRouter.js";
 import type { CancelBetPayload, CashOutPayload, PlaceBetPayload } from "./types.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -160,10 +160,10 @@ io.on("connection", (socket) => {
   // Authenticated client identifies itself so we can push real wallet balance.
   socket.on("auth:identify", async (payload: { userId: string; token: string }) => {
     if (!payload?.userId || !payload?.token) return;
-    // Verify the token quickly via Supabase.
-    const { data: { user }, error } = await supabase.auth.getUser(payload.token);
-    if (error || !user || user.id !== payload.userId) return;
-    authedUserId = user.id;
+    // Verify the HMAC-SHA256 token (not a Supabase JWT).
+    const decoded = verifyToken(payload.token);
+    if (!decoded || decoded.id !== payload.userId) return;
+    authedUserId = decoded.id;
     authedSockets.set(socket.id, authedUserId);
     // Push real wallet balance immediately.
     const realBalance = await getWalletBalance(authedUserId);
@@ -174,8 +174,8 @@ io.on("connection", (socket) => {
 
   socket.on("bet:place", async (payload: PlaceBetPayload) => {
     const { panel, amount, userId } = payload;
-
-    if (userId && engine.supabaseRoundId) {
+    try {
+      if (userId && engine.supabaseRoundId) {
       // Authenticated path: use Supabase wallet RPC.
       const { data, error } = await supabase.rpc("place_bet", {
         p_user_id: userId,
@@ -223,6 +223,10 @@ io.on("connection", (socket) => {
       } else {
         socket.emit("bet:rejected", { panel, reason: "phase" });
       }
+    }
+    } catch (err) {
+      console.error("[bet:place] unexpected error:", err);
+      socket.emit("bet:rejected", { panel, reason: "server_error" });
     }
   });
 

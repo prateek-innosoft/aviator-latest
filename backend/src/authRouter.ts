@@ -39,7 +39,7 @@ function signToken(payload: AdminToken): string {
   return `${body}.${sig}`;
 }
 
-function verifyToken(token: string): AdminToken | null {
+export function verifyToken(token: string): AdminToken | null {
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
   const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(body).digest("base64url");

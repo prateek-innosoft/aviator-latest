@@ -21,7 +21,7 @@ function GameApp() {
   // For demo/testing mode: work without user authentication
   // If logged in, identify to backend; otherwise use demo mode
   useEffect(() => {
-    if (profile && session) {
+    if (profile && session && profile.role === "user") {
       setAuth({ userId: profile.id, accessToken: session.access_token });
       const identify = () => {
         socket.emit("auth:identify", {
