@@ -73,7 +73,7 @@
         "background": {
           "activeOnStart": true,
           "beginsPattern": ".",
-          "endsPattern": "AVIATOR_SHARE_URL=https://[a-z0-9-]+\\.trycloudflare\\.com"
+          "endsPattern": "AVIATOR_SHARE_URL=https://[a-z0-9.-]+\\.(trycloudflare\\.com|tunnelmole\\.net)"
         }
       },
       "presentation": {
@@ -83,6 +83,13 @@
         "showReuseMessage": false,
         "focus": true
       }
+    {
+      "label": "Aviator: Show Share Link",
+      "detail": "Re-print the last public URL from share-link.url",
+      "type": "shell",
+      "command": "npm run share:link",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }

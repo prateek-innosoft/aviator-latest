@@ -1,0 +1,10 @@
+{
+  "name": "avitor",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Aviator crash game — root scripts for VS Code tasks and public sharing",
+  "scripts": {
+    "dev:tunnel": "node scripts/share-tunnel.mjs",
+    "share:link": "node scripts/show-share-link.mjs"
+  }
+}

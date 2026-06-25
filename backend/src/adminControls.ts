@@ -83,7 +83,7 @@ async function loadFromConfigFallback(): Promise<AdminControlsState | null> {
 export async function loadAdminControls(): Promise<AdminControlsState> {
   const { data, error } = await supabase
     .from("admin_controls")
-    .select("min_bet, max_bet, win_mode, forced_crash, next_crash_point, updated_at, updated_by")
+    .select("min_bet, max_bet, win_mode, forced_crash, next_crash_point, updated_at")
     .eq("id", 1)
     .maybeSingle();
 
@@ -128,7 +128,6 @@ export async function saveAdminControls(
     forced_crash: next.forced_crash,
     next_crash_point: next.next_crash_point,
     updated_at: next.updated_at,
-    updated_by: next.updated_by,
   };
 
   const { error: upsertError } = await supabase

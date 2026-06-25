@@ -18,6 +18,7 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
+share-link.url
 
 # OS / editor cruft
 .DS_Store
