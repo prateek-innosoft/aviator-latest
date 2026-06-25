@@ -13,6 +13,10 @@ export default defineConfig({
     strictPort: true,
     // Allow public tunnel hostnames (Cloudflare trycloudflare.com, etc.)
     allowedHosts: true,
+    // Disable HMR WebSocket — it fails behind tunnels (tunnelmole, cloudflare)
+    // because they don't proxy the Vite HMR ws connection. Game works fine
+    // without it; just refresh the browser manually when editing frontend code.
+    hmr: false,
     proxy: {
       "/api": { target: backend, changeOrigin: true },
       "/socket.io": { target: backend, ws: true, changeOrigin: true },
