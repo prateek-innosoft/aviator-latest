@@ -403,7 +403,7 @@ export function RateControlPanel({ token }: { token: string }) {
         <section className="rounded-2xl border border-blue-100 bg-blue-50 p-6">
           <h2 className="mb-3 text-[13px] font-bold uppercase tracking-wider text-blue-500">How it works</h2>
           <div className="space-y-2 text-[12px] leading-relaxed text-blue-700">
-            <p><span className="font-semibold">Global Win Rate</span> controls the multiplier range: House Wins (max 2×), Fair (max 10×), or Players Win (100×–130×).</p>
+            <p><span className="font-semibold">Global Win Rate</span> controls the multiplier range: House Wins (0.10×–0.99×), Fair (max 5×), or Players Win (100×–130×).</p>
             <p><span className="font-semibold">Bet Limits</span> apply to all players — bets outside this range are rejected.</p>
             <p className="border-t border-blue-200 pt-2 text-blue-600">Changes save automatically and take effect on the next round. The live multiplier and recent crash history are shown in the top bar.</p>
           </div>
