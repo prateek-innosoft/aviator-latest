@@ -65,7 +65,7 @@
    - You'll see your bet in the live bets sidebar
 
    ### Step 3: Wait for the Plane to Fly
-   - The multiplier starts at 1.00x and climbs
+   - The multiplier starts at **0.00x** and climbs exponentially
    - Watch the live bets sidebar to see when others cash out
 
    ### Step 4: Cash Out Before Crash
@@ -101,16 +101,17 @@
 
    | Time | Multiplier | 100 ZAR Bet → Win |
    |------|-----------|-------------------|
-   | 0s   | 1.00x     | 100 ZAR           |
-   | 1s   | 1.17x     | 117 ZAR           |
-   | 2s   | 1.38x     | 138 ZAR           |
-   | 3s   | 1.62x     | 162 ZAR           |
-   | 4s   | 1.90x     | 190 ZAR           |
-   | 5s   | 2.24x     | 224 ZAR           |
-   | 10s  | 5.00x     | 500 ZAR           |
-   | 15s  | 11.20x    | 1,120 ZAR         |
-   | 20s  | 25.03x    | 2,503 ZAR         |
-   | 30s  | 122.77x   | 12,277 ZAR        |
+   | 0s   | 0.00x     | — (can't cash out yet) |
+   | 1s   | 0.17x     | 17 ZAR            |
+   | 2s   | 0.37x     | 37 ZAR            |
+   | 3s   | 0.61x     | 61 ZAR            |
+   | 4s   | 0.89x     | 89 ZAR            |
+   | ~4.4s| 1.00x    | 100 ZAR (break-even) |
+   | 5s   | 1.22x     | 122 ZAR           |
+   | 7s   | 2.06x     | 206 ZAR           |
+   | 10s  | 3.95x     | 395 ZAR           |
+   | 15s  | 10.02x    | 1,002 ZAR         |
+   | 20s  | 23.53x    | 2,353 ZAR         |
 
    **Key insight:** The longer you wait, the higher the potential win — but the higher the risk of crashing.
 
@@ -170,11 +171,12 @@
    2. The crash point was calculated correctly from the seed
    - This proves the game wasn't rigged mid-round
 
-   ### The Math
-   - 3% chance of instant crash at 1.00x
-   - The rest follows an inverse distribution with a 1% house edge
-   - Maximum multiplier: 130x (hard cap)
-   - No admin can override this — the math is transparent
+   ### The Math (Normal / Fair Mode)
+   - **70%** of rounds crash at exactly **1.00x** (instant bust)
+   - **20%** of rounds crash between **1.01x and 3.00x**
+   - **10%** of rounds crash between **3.01x and 5.00x**
+   - Maximum multiplier hard cap: **130x**
+   - The seed and hash are published before each round so you can verify the crash point was not changed mid-flight
 
    ---
 
@@ -217,8 +219,8 @@
       - Used for promotions or testing
 
    3. **Loss** (favor house)
-      - Crash point is always exactly 1.00x — instant bust every round
-      - Players can never cash out above 1.00x
+      - Crash point is random between **0.10x and 0.99x** — always before break-even
+      - Players can never cash out (the plane crashes before the multiplier crosses 1.00x)
       - Used to maximise house return
 
    ### Next Crash Point
@@ -250,7 +252,7 @@
    **A:** Yes, but only during the betting phase (before the countdown ends). Click "Cancel" on the bet panel. Your bet is refunded immediately.
 
    ### Q: What's the house edge?
-   **A:** 1%. This means over many rounds, the house expects to keep 1% of all bets. This is standard for crash games.
+   **A:** In Normal (fair) mode: 70% of rounds bust instantly at 1.00x, 20% crash between 1.01x–3.00x, and 10% between 3.01x–5.00x. The effective house edge depends on when players cash out — early cashouts beat the house, late ones lose to the bust rate.
 
    ### Q: Is there a maximum win?
    **A:** The maximum multiplier is 130x. With a 10,000 ZAR max bet, the maximum win is 1,300,000 ZAR per panel.
