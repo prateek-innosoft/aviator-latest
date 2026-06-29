@@ -238,6 +238,10 @@ export function GameCanvas() {
         }
       } else if (ph === "betting") {
         if (planeRef.current) {
+          // Kill any in-progress crash fly-out before resetting position,
+          // otherwise the two tweens fight and the plane flashes at wrong coords.
+          crashAnimRef.current?.kill();
+          crashAnimRef.current = null;
           const { originX, originY } = anchors(w, h);
           const planeH = planeRef.current.offsetHeight || 116;
           gsap.set(planeRef.current, {

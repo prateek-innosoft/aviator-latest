@@ -11,6 +11,7 @@ const topMetricTabs = ["X", "Win", "Rounds"] as const;
 const topPeriodTabs = ["Day", "Month", "Year"] as const;
 
 const tierColor: Record<string, string> = {
+  crash: "text-[#ff4444]",
   low: "text-low",
   mid: "text-mid",
   high: "text-high",
