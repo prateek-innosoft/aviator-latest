@@ -93,16 +93,26 @@ export class GameEngine extends EventEmitter {
       this.overrides.nextCrashPoint = null; // consume once
     }
     else {
-      // ── Global win/loss mode ─────────────────────────────────────────────
+      // ── Win/loss/fair distribution ──────────────────────────────────────
       if (this.overrides.winMode === "win") {
-        // Player win: high multiplier in range 100–130×
+        // Player win: high multiplier 100×–130× (unchanged)
         result = Math.round((100 + Math.random() * 30) * 100) / 100;
       } else if (this.overrides.winMode === "loss") {
-        // House win: bust at or below 2×
-        result = Math.round((1.0 + Math.random() * 1.0) * 100) / 100;
+        // House win: always instant bust at 1.00× — player can never cash out
+        result = 1.00;
       } else {
-        // ── Normal mode (fair): 100% random from 1.00× to 10.00× ───────────
-        result = Math.round((1.0 + Math.random() * 9.0) * 100) / 100;
+        // ── Fair (normal): tiered probability distribution ────────────────
+        // 70%: instant bust at 1.00×
+        // 20%: crash between 1.01× and 3.00×
+        // 10%: crash between 3.01× and 5.00×
+        const r = Math.random();
+        if (r < 0.70) {
+          result = 1.00;
+        } else if (r < 0.90) {
+          result = Math.round((1.01 + Math.random() * 1.99) * 100) / 100;
+        } else {
+          result = Math.round((3.01 + Math.random() * 1.99) * 100) / 100;
+        }
       }
     }
 
@@ -209,7 +219,7 @@ export class GameEngine extends EventEmitter {
 
   private async beginFlying() {
     this.phase = "flying";
-    this.multiplier = 1.0;
+    this.multiplier = 0.0;
     this.roundStart = Date.now();
 
     // Transition round to 'flying' in Supabase.
