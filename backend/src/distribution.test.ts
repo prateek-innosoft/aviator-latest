@@ -98,7 +98,7 @@ console.log(`${"─".repeat(60)}`);
 // ─── 2. FAIR MODE (normal) ───────────────────────────────────────────────────
 console.log(`\n${"─".repeat(60)}`);
 console.log(`TEST: Fair/Normal mode — ${RUNS} rounds`);
-console.log(`Expected: ~70% at 1.00x | ~20% at 1.01-3.00x | ~10% at 3.01-5.00x`);
+console.log(`Expected: ~70% at 0.00-1.00x | ~20% at 1.01-3.00x | ~10% at 3.01-5.00x`);
 console.log(`${"─".repeat(60)}`);
 
 {
@@ -108,23 +108,23 @@ console.log(`${"─".repeat(60)}`);
     results.push(v);
   }
 
-  const tier1 = results.filter(v => v === 1.00).length;
+  const tier1 = results.filter(v => v >= 0.00 && v <= 1.00).length;
   const tier2 = results.filter(v => v > 1.00 && v <= 3.00).length;
   const tier3 = results.filter(v => v > 3.00 && v <= 5.00).length;
-  const outOfRange = results.filter(v => v < 1.00 || v > 5.00).length;
+  const outOfRange = results.filter(v => v < 0.00 || v > 5.00).length;
 
   const min = Math.min(...results);
   const max = Math.max(...results);
 
   // Allow ±8% tolerance for statistical variance over 1000 runs
-  assert(tier1 >= 620 && tier1 <= 780, `Tier1 (1.00x): expected ~700, got ${tier1} (${pct(tier1, RUNS)})`);
+  assert(tier1 >= 620 && tier1 <= 780, `Tier1 (0.00-1.00x): expected ~700, got ${tier1} (${pct(tier1, RUNS)})`);
   assert(tier2 >= 160 && tier2 <= 240, `Tier2 (1.01-3.00x): expected ~200, got ${tier2} (${pct(tier2, RUNS)})`);
   assert(tier3 >= 70  && tier3 <= 130, `Tier3 (3.01-5.00x): expected ~100, got ${tier3} (${pct(tier3, RUNS)})`);
-  assert(outOfRange === 0,             `No crashes outside 1.00x–5.00x (got ${outOfRange})`);
-  assert(min >= 1.00,                  `Min crash >= 1.00x (got ${min})`);
+  assert(outOfRange === 0,             `No crashes outside 0.00x–5.00x (got ${outOfRange})`);
+  assert(min >= 0.00,                  `Min crash >= 0.00x (got ${min})`);
   assert(max <= 5.00,                  `Max crash <= 5.00x (got ${max})`);
 
-  console.log(`  Tier 1 (1.00x exact): ${tier1} rounds = ${pct(tier1, RUNS)}  [target ~70%]`);
+  console.log(`  Tier 1 (0.00-1.00x): ${tier1} rounds = ${pct(tier1, RUNS)}  [target ~70%]`);
   console.log(`  Tier 2 (1.01-3.00x): ${tier2} rounds = ${pct(tier2, RUNS)}  [target ~20%]`);
   console.log(`  Tier 3 (3.01-5.00x): ${tier3} rounds = ${pct(tier3, RUNS)}  [target ~10%]`);
   console.log(`  Out of range:        ${outOfRange} rounds`);

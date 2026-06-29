@@ -172,9 +172,9 @@
    - This proves the game wasn't rigged mid-round
 
    ### The Math (Normal / Fair Mode)
-   - **70%** of rounds crash at exactly **1.00x** (instant bust)
-   - **20%** of rounds crash between **1.01x and 3.00x**
-   - **10%** of rounds crash between **3.01x and 5.00x**
+   - **70%** of rounds crash randomly between **0.00x and 1.00x** (below break-even — players lose their bet)
+   - **20%** of rounds crash between **1.01x and 3.00x** (profit if you cash out in time)
+   - **10%** of rounds crash between **3.01x and 5.00x** (bigger wins possible)
    - Maximum multiplier hard cap: **130x**
    - The seed and hash are published before each round so you can verify the crash point was not changed mid-flight
 
@@ -208,9 +208,9 @@
    Three options:
 
    1. **Normal** (default — fair tiered distribution)
-      - 70% of rounds crash at exactly 1.00x (instant bust)
-      - 20% of rounds crash between 1.01x and 3.00x
-      - 10% of rounds crash between 3.01x and 5.00x
+      - 70% of rounds crash randomly between 0.00x and 1.00x (below break-even — players lose)
+      - 20% of rounds crash between 1.01x and 3.00x (small profit window)
+      - 10% of rounds crash between 3.01x and 5.00x (bigger wins possible)
       - Balanced house edge, mathematically transparent
 
    2. **Win** (favor players)

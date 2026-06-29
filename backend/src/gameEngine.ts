@@ -106,12 +106,12 @@ export class GameEngine extends EventEmitter {
         result = Math.round((0.10 + Math.random() * 0.89) * 100) / 100;
       } else {
         // ── Fair (normal): tiered probability distribution ────────────────
-        // 70%: instant bust at 1.00×
+        // 70%: crash randomly between 0.00× and 1.00× (sub-1x, below break-even)
         // 20%: crash between 1.01× and 3.00×
         // 10%: crash between 3.01× and 5.00×
         const r = Math.random();
         if (r < 0.70) {
-          result = 1.00;
+          result = Math.round(Math.random() * 100) / 100; // 0.00x – 1.00x
         } else if (r < 0.90) {
           result = Math.round((1.01 + Math.random() * 1.99) * 100) / 100;
         } else {
