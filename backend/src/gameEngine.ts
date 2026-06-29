@@ -98,8 +98,11 @@ export class GameEngine extends EventEmitter {
         // Player win: high multiplier 100×–130× (unchanged)
         result = Math.round((100 + Math.random() * 30) * 100) / 100;
       } else if (this.overrides.winMode === "loss") {
-        // House win: always instant bust at 1.00× — player can never cash out
-        result = 1.00;
+        // House win: crash below 1.00× — random between 0.10× and 0.99×
+        // The multiplier formula (e^0.16t) exceeds any sub-1x value on the
+        // very first tick (~50ms), so the plane crashes before players can
+        // ever cash out.
+        result = Math.round((0.10 + Math.random() * 0.89) * 100) / 100;
       } else {
         // ── Fair (normal): tiered probability distribution ────────────────
         // 70%: instant bust at 1.00×
