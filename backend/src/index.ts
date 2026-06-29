@@ -303,16 +303,23 @@ io.on("connection", (socket) => {
     const { panel, userId } = payload;
 
     if (userId && engine.supabaseRoundId) {
-      // Authenticated path: cashout via Supabase RPC using current multiplier.
-      const multiplier = engine.multiplier;
+      // Snapshot the round ID and multiplier BEFORE the async RPC, then
+      // immediately lock the bet in the engine so it cannot also be resolved
+      // as a loss if the round crashes while we await Supabase.
+      const snapshotMultiplier = engine.multiplier;
+      const snapshotRoundId    = engine.supabaseRoundId;
+      const locked = engine.cashOut(socket.id, panel);
+      if (!locked) return; // bet already cashed out, not active, or wrong phase
+
       const { data, error } = await supabase.rpc("cashout_bet", {
         p_user_id: userId,
-        p_round_id: engine.supabaseRoundId,
+        p_round_id: snapshotRoundId,
         p_panel: panel,
-        p_multiplier: multiplier,
+        p_multiplier: snapshotMultiplier,
         p_reference: socket.id,
       });
       if (error) {
+        console.error("[bet:cashout] RPC error:", error.message);
         return;
       }
       const result = data as {
@@ -325,11 +332,10 @@ io.on("connection", (socket) => {
       };
       if (!result.ok) return;
 
-      engine.cashOut(socket.id, panel);
       socket.emit("bet:cashedout", {
         panel,
-        multiplier: result.multiplier,
-        win: result.win,
+        multiplier: result.multiplier ?? snapshotMultiplier,
+        win: result.win ?? locked.win,
         balance: result.balance,
         betId: result.bet_id,
       });
