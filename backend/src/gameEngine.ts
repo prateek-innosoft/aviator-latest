@@ -45,6 +45,7 @@ export class GameEngine extends EventEmitter {
   phase: GamePhase = "betting";
   roundId = "";
   supabaseRoundId = ""; // UUID from the `rounds` table
+  private startRoundPromise: Promise<void> = Promise.resolve();
   multiplier = 0.0;
   crashPoint = 1.0;
   countdown = BETTING_MS;
@@ -226,19 +227,21 @@ export class GameEngine extends EventEmitter {
     this.multiplier = 0.0;
     this.roundStart = Date.now();
 
-    // Transition round to 'flying' in Supabase.
-    if (this.supabaseRoundId) {
-      try {
-        const { error } = await supabase.rpc("start_round", {
-          p_round_id: this.supabaseRoundId,
-        });
-        if (error) console.error("[Supabase] start_round error:", error.message);
-      } catch (err) {
-        console.error("[Supabase] start_round exception:", err);
-      }
-    }
-
+    // Emit flying event immediately — don't block on Supabase latency.
     this.emit("round:flying", this.publicState());
+
+    // Transition round to 'flying' in Supabase asynchronously.
+    // Store the promise so resolve_round can wait for it on fast crashes.
+    if (this.supabaseRoundId) {
+      const rid = this.supabaseRoundId;
+      this.startRoundPromise = Promise.resolve(supabase.rpc("start_round", { p_round_id: rid }))
+        .then(({ error }) => {
+          if (error) console.error("[Supabase] start_round error:", error.message);
+        })
+        .catch((err: unknown) => console.error("[Supabase] start_round exception:", err));
+    } else {
+      this.startRoundPromise = Promise.resolve();
+    }
 
     this.clearTimer();
     this.timer = setInterval(() => {
@@ -292,14 +295,15 @@ export class GameEngine extends EventEmitter {
     });
 
     // Persist crash result to Supabase asynchronously — does not block next round.
+    // Wait for start_round first so the DB doesn't reject with 'not_flying'.
     if (this.supabaseRoundId) {
       const rid = this.supabaseRoundId;
-      Promise.resolve(supabase.rpc("resolve_round", {
+      this.startRoundPromise.then(() => Promise.resolve(supabase.rpc("resolve_round", {
         p_round_id: rid,
         p_crash_point: this.crashPoint,
         p_seed: this.seed,
         p_server_instance_id: SERVER_INSTANCE_ID,
-      })).then(({ data, error }) => {
+      }))).then(({ data, error }) => {
         if (error) console.error("[Supabase] resolve_round error:", error.message);
         else if (!(data as { ok: boolean }).ok) console.warn("[Supabase] resolve_round not-ok:", data);
       }).catch((err: unknown) => console.error("[Supabase] resolve_round exception:", err));
