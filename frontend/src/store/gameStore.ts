@@ -71,7 +71,7 @@ export const useGame = create<GameState>((set, get) => ({
   connected: false,
   phase: "betting",
   roundId: "",
-  multiplier: 1.0,
+  multiplier: 0.0,
   countdown: 5000,
   history: [],
   bets: [],

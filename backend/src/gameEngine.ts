@@ -45,7 +45,7 @@ export class GameEngine extends EventEmitter {
   phase: GamePhase = "betting";
   roundId = "";
   supabaseRoundId = ""; // UUID from the `rounds` table
-  multiplier = 1.0;
+  multiplier = 0.0;
   crashPoint = 1.0;
   countdown = BETTING_MS;
 
