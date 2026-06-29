@@ -247,9 +247,10 @@ export class GameEngine extends EventEmitter {
       // Formula: e^(GROWTH*t) - 1  →  0.0 at t=0, crosses 1.0 at ~6.25s.
       // This allows sub-1x crash points (house win) to be reached naturally
       // as the plane visually climbs through 0.10x, 0.50x, 0.99x etc.
-      this.multiplier = Math.floor((Math.exp(GROWTH * t) - 1) * 100) / 100;
+      const rawMultiplier = Math.exp(GROWTH * t) - 1;
+      this.multiplier = Math.floor(rawMultiplier * 100) / 100;
 
-      if (this.multiplier >= this.crashPoint) {
+      if (rawMultiplier >= this.crashPoint) {
         this.multiplier = this.crashPoint;
         this.resolveBots(true);
         const bets = this.allBets();
