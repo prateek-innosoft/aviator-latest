@@ -215,7 +215,7 @@ export const useGame = create<GameState>((set, get) => ({
         return {
           phase: "betting",
           roundId: st.roundId,
-          multiplier: 1.0,
+          multiplier: 0.0,
           countdown: st.countdown,
           bets: st.bets,
           totalBets: st.totalBets,
@@ -252,7 +252,7 @@ export const useGame = create<GameState>((set, get) => ({
     socket.on("round:flying", (st: PublicRoundState) => {
       set({
         phase: "flying",
-        multiplier: 1.0,
+        multiplier: 0.0,
         flyingStartedAt: Date.now(),
         bets: st.bets,
         totalBets: st.totalBets,

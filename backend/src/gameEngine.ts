@@ -179,7 +179,7 @@ export class GameEngine extends EventEmitter {
   private async beginBetting() {
     this.phase = "betting";
     this.roundId = crypto.randomUUID();
-    this.multiplier = 1.0;
+    this.multiplier = 0.0;
     this.countdown = BETTING_MS;
 
     const s = generateSeed();

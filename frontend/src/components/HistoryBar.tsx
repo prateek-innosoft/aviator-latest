@@ -3,6 +3,7 @@ import { useGame } from "../store/gameStore";
 import { multTier } from "../lib/format";
 
 const tierColor: Record<string, string> = {
+  crash: "text-[#ff4444]", // sub-1x house win — distinct red
   low: "text-low",
   mid: "text-mid",
   high: "text-high",

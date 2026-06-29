@@ -35,9 +35,11 @@ function pathPoint(u: number, W: number, H: number): Pt {
   return { x, y };
 }
 
-/** Map the live multiplier to curve progress (0..1), smooth + saturating. */
+/** Map the live multiplier to curve progress (0..1), smooth + saturating.
+ * Works for sub-1x values (house win mode) — no floor clamp so the plane
+ * visually climbs from 0.00x through 0.10x, 0.50x, 0.99x etc. */
 function progressFromMultiplier(m: number): number {
-  return 1 - Math.exp(-(Math.max(1, m) - 1) * 0.4);
+  return 1 - Math.exp(-(Math.max(0, m)) * 0.4);
 }
 
 /** Central glow colour, interpolated across multiplier tiers. */
