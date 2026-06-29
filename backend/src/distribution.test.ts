@@ -6,6 +6,8 @@
  * Run with:  npx tsx src/distribution.test.ts
  */
 
+export {};
+
 // ─── Inline the logic (no class instantiation needed) ───────────────────────
 
 const HARD_CAP = 130;

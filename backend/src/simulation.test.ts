@@ -8,6 +8,8 @@
  * Run with:  npx tsx src/simulation.test.ts
  */
 
+export {};
+
 // ─── Inline crash logic (no server needed) ───────────────────────────────────
 
 const HARD_CAP = 130;

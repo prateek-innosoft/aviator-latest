@@ -242,8 +242,11 @@ export class GameEngine extends EventEmitter {
     this.clearTimer();
     this.timer = setInterval(() => {
       const t = (Date.now() - this.roundStart) / 1000;
-      // Exponential growth curve, identical shape to classic crash games.
-      this.multiplier = Math.floor(Math.exp(GROWTH * t) * 100) / 100;
+      // Exponential growth curve shifted so multiplier starts at 0.00x.
+      // Formula: e^(GROWTH*t) - 1  →  0.0 at t=0, crosses 1.0 at ~6.25s.
+      // This allows sub-1x crash points (house win) to be reached naturally
+      // as the plane visually climbs through 0.10x, 0.50x, 0.99x etc.
+      this.multiplier = Math.floor((Math.exp(GROWTH * t) - 1) * 100) / 100;
 
       if (this.multiplier >= this.crashPoint) {
         this.multiplier = this.crashPoint;
