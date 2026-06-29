@@ -64,7 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshProfile = useCallback(async () => {
     const raw = localStorage.getItem("aviator_admin_session");
     if (!raw) return;
-    const session: SimpleSession = JSON.parse(raw);
+    let session: SimpleSession;
+    try { session = JSON.parse(raw); } catch { localStorage.removeItem("aviator_admin_session"); return; }
     const profile = await fetchProfile(session);
     setState((s) => ({ ...s, profile }));
   }, [fetchProfile]);
@@ -73,7 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Initial session check from localStorage
     const raw = localStorage.getItem("aviator_admin_session");
     if (raw) {
-      const session: SimpleSession = JSON.parse(raw);
+      let session: SimpleSession;
+      try { session = JSON.parse(raw); } catch {
+        localStorage.removeItem("aviator_admin_session");
+        setState({ session: null, profile: null, loading: false, error: null });
+        return;
+      }
       // Check if token is expired
       if (session.expires_at * 1000 > Date.now()) {
         fetchProfile(session).then((profile) => {

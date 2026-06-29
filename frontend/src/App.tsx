@@ -80,7 +80,8 @@ function GameApp() {
 }
 
 export default function App() {
-  const isAdminPath = window.location.pathname.startsWith("/admin");
+  const p = window.location.pathname;
+  const isAdminPath = p === "/admin" || p.startsWith("/admin/");
   return (
     <AuthProvider>
       {isAdminPath ? <AdminPanel /> : <GameApp />}

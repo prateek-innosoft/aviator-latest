@@ -179,6 +179,7 @@ export class GameEngine extends EventEmitter {
   private async beginBetting() {
     this.phase = "betting";
     this.roundId = crypto.randomUUID();
+    this.supabaseRoundId = ""; // clear immediately — prevents old ID bleeding into new round
     this.multiplier = 0.0;
     this.countdown = BETTING_MS;
 
@@ -280,31 +281,28 @@ export class GameEngine extends EventEmitter {
     this.history.unshift({ id: this.roundId, multiplier: this.crashPoint });
     this.history = this.history.slice(0, HISTORY_LIMIT);
 
-    // Persist crash result to Supabase — reveals seed, marks lost bets, writes audit row.
-    if (this.supabaseRoundId) {
-      try {
-        const { data, error } = await supabase.rpc("resolve_round", {
-          p_round_id: this.supabaseRoundId,
-          p_crash_point: this.crashPoint,
-          p_seed: this.seed,
-          p_server_instance_id: SERVER_INSTANCE_ID,
-        });
-        if (error) {
-          console.error("[Supabase] resolve_round error:", error.message);
-        } else if (!(data as { ok: boolean }).ok) {
-          console.warn("[Supabase] resolve_round returned not-ok:", data);
-        }
-      } catch (err) {
-        console.error("[Supabase] resolve_round exception:", err);
-      }
-    }
-
+    // Emit crash to all clients FIRST — before the Supabase await — so the
+    // crash animation fires immediately and players never see a frozen plane.
     this.emit("round:crashed", {
       multiplier: this.crashPoint,
       seed: this.seed,
       hashedSeed: this.hashedSeed,
       history: this.history,
     });
+
+    // Persist crash result to Supabase asynchronously — does not block next round.
+    if (this.supabaseRoundId) {
+      const rid = this.supabaseRoundId;
+      Promise.resolve(supabase.rpc("resolve_round", {
+        p_round_id: rid,
+        p_crash_point: this.crashPoint,
+        p_seed: this.seed,
+        p_server_instance_id: SERVER_INSTANCE_ID,
+      })).then(({ data, error }) => {
+        if (error) console.error("[Supabase] resolve_round error:", error.message);
+        else if (!(data as { ok: boolean }).ok) console.warn("[Supabase] resolve_round not-ok:", data);
+      }).catch((err: unknown) => console.error("[Supabase] resolve_round exception:", err));
+    }
 
     this.timer = setTimeout(() => this.beginBetting(), CRASH_PAUSE_MS);
   }
