@@ -88,7 +88,8 @@ export function BetPanel({
   else if (panel.queued) action = "cancelQueued";
   else if (panel.cashedOut) action = "waiting";
 
-  const potentialWin = panel.amount * multiplier;
+  // Show at least the bet amount so the button never reads R0.00 at 0.00x start.
+  const potentialWin = Math.max(panel.amount, panel.amount * multiplier);
   const insufficient = panel.amount > balance;
   // When auto-bet is on, betting is handled automatically each round, so the
   // manual button is locked to prevent double bets.
