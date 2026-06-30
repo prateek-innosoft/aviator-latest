@@ -172,10 +172,13 @@
    - This proves the game wasn't rigged mid-round
 
    ### The Math (Normal / Fair Mode)
-   - **70%** of rounds crash randomly between **0.00x and 1.00x** (below break-even — players lose their bet)
-   - **20%** of rounds crash between **1.01x and 3.00x** (profit if you cash out in time)
-   - **10%** of rounds crash between **3.01x and 5.00x** (bigger wins possible)
-   - Maximum multiplier hard cap: **130x**
+   All crash points fall between **1.00x and 1.10x** — 5 weighted tiers:
+   - **70%** → 1.00x – 1.06x
+   - **20%** → 1.00x – 1.08x
+   - **5%**  → 1.00x – 1.07x
+   - **3%**  → 1.00x – 1.09x
+   - **2%**  → 1.00x – 1.10x
+   - Maximum multiplier hard cap: **130x** (Win mode only)
    - The seed and hash are published before each round so you can verify the crash point was not changed mid-flight
 
    ---
@@ -208,10 +211,12 @@
    Three options:
 
    1. **Normal** (default — fair tiered distribution)
-      - 70% of rounds crash randomly between 0.00x and 1.00x (below break-even — players lose)
-      - 20% of rounds crash between 1.01x and 3.00x (small profit window)
-      - 10% of rounds crash between 3.01x and 5.00x (bigger wins possible)
-      - Balanced house edge, mathematically transparent
+      - 70% of rounds crash between 1.00x and 1.06x
+      - 20% of rounds crash between 1.00x and 1.08x
+      -  5% of rounds crash between 1.00x and 1.07x
+      -  3% of rounds crash between 1.00x and 1.09x
+      -  2% of rounds crash between 1.00x and 1.10x
+      - All rounds stay between 1.00x–1.10x — tight range, low volatility
 
    2. **Win** (favor players)
       - Crash point is random between 100x and 130x
@@ -219,8 +224,8 @@
       - Used for promotions or testing
 
    3. **Loss** (favor house)
-      - Crash point is random between **0.10x and 0.99x** — always before break-even
-      - Players can never cash out (the plane crashes before the multiplier crosses 1.00x)
+      - Crash point is always between **1.00x and 1.05x**
+      - Players can cash out but only at near break-even — no real profit possible
       - Used to maximise house return
 
    ### Next Crash Point
@@ -252,7 +257,7 @@
    **A:** Yes, but only during the betting phase (before the countdown ends). Click "Cancel" on the bet panel. Your bet is refunded immediately.
 
    ### Q: What's the house edge?
-   **A:** In Normal (fair) mode: 70% of rounds bust instantly at 1.00x, 20% crash between 1.01x–3.00x, and 10% between 3.01x–5.00x. The effective house edge depends on when players cash out — early cashouts beat the house, late ones lose to the bust rate.
+   **A:** In Normal mode all crashes land between 1.00x–1.10x. The house edge comes from timing — players who cash out late (above the actual crash point) lose. The tight range means very small wins or losses each round.
 
    ### Q: Is there a maximum win?
    **A:** The maximum multiplier is 130x. With a 10,000 ZAR max bet, the maximum win is 1,300,000 ZAR per panel.

@@ -96,27 +96,29 @@ export class GameEngine extends EventEmitter {
     else {
       // ── Win/loss/fair distribution ──────────────────────────────────────
       if (this.overrides.winMode === "win") {
-        // Player win: high multiplier 100×–130× (unchanged)
+        // Player win: 100×–130×
         result = Math.round((100 + Math.random() * 30) * 100) / 100;
       } else if (this.overrides.winMode === "loss") {
-        // House win: crash below 1.00× — random between 0.10× and 0.99×
-        // The multiplier formula (e^0.16t) exceeds any sub-1x value on the
-        // very first tick (~50ms), so the plane crashes before players can
-        // ever cash out.
-        result = Math.round((0.10 + Math.random() * 0.89) * 100) / 100;
+        // House win: always crashes 1.00×–1.05× — just above break-even so
+        // players can never cash out for any real profit.
+        result = 1.00 + Math.round(Math.random() * 5) / 100; // 1.00, 1.01, 1.02, 1.03, 1.04, or 1.05
       } else {
-        // ── Fair (normal): tiered probability distribution ────────────────
-        // 70%: crash randomly between 0.00× and 1.00× (sub-1x, below break-even)
-        // 20%: crash between 1.01× and 3.00×
-        // 10%: crash between 3.01× and 5.00×
+        // ── Normal (fair): 5-tier weighted distribution ───────────────────
+        // All tiers start at 1.00× (break-even) and cap at 1.10×.
+        // Weights: 70% / 20% / 5% / 3% / 2%  (must sum to 1.00)
+        //   Tier 1 (70%): 1.00× – 1.06×
+        //   Tier 2 (20%): 1.00× – 1.08×
+        //   Tier 3 ( 5%): 1.00× – 1.07×
+        //   Tier 4 ( 3%): 1.00× – 1.09×
+        //   Tier 5 ( 2%): 1.00× – 1.10×
         const r = Math.random();
-        if (r < 0.70) {
-          result = Math.round(Math.random() * 100) / 100; // 0.00x – 1.00x
-        } else if (r < 0.90) {
-          result = Math.round((1.01 + Math.random() * 1.99) * 100) / 100;
-        } else {
-          result = Math.round((3.01 + Math.random() * 1.99) * 100) / 100;
-        }
+        let lo = 1.00, hi: number;
+        if      (r < 0.70) hi = 1.06; // tier 1
+        else if (r < 0.90) hi = 1.08; // tier 2
+        else if (r < 0.95) hi = 1.07; // tier 3
+        else if (r < 0.98) hi = 1.09; // tier 4
+        else               hi = 1.10; // tier 5
+        result = Math.round((lo + Math.random() * (hi - lo)) * 100) / 100;
       }
     }
 

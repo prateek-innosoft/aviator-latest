@@ -331,7 +331,7 @@ export function RateControlPanel({ token }: { token: string }) {
               </div>
               <div className="text-center">
                 <div className={`text-[14px] font-black ${winMode === 0 ? "text-red-600" : "text-gray-400"}`}>House Wins</div>
-                <div className="mt-0.5 text-[11px] text-gray-400">Crashes at 0.10×–0.99×</div>
+                <div className="mt-0.5 text-[11px] text-gray-400">Crashes at 1.00×–1.05×</div>
               </div>
             </button>
 
@@ -352,7 +352,7 @@ export function RateControlPanel({ token }: { token: string }) {
               </div>
               <div className="text-center">
                 <div className={`text-[14px] font-black ${winMode === 50 ? "text-amber-600" : "text-gray-400"}`}>Fair</div>
-                <div className="mt-0.5 text-[11px] text-gray-400">Max 10× multiplier</div>
+                <div className="mt-0.5 text-[11px] text-gray-400">1.00×–1.10× multiplier</div>
               </div>
             </button>
 
@@ -382,8 +382,8 @@ export function RateControlPanel({ token }: { token: string }) {
             {winMode === 100
               ? "Players win almost every round with very high multipliers (100×–130×)."
               : winMode === 50
-              ? "Balanced — statistically fair for all players (capped at 10×)."
-              : "House wins — plane crashes between 0.10×–0.99×, before players can ever cash out."}
+              ? "Balanced — plane crashes between 1.00×–1.10× across 5 weighted tiers."
+              : "House wins — plane always crashes between 1.00×–1.05×, players can never profit."}
           </div>
         </section>
 

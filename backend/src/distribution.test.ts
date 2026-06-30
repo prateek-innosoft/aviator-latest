@@ -29,20 +29,21 @@ function computeCrashPoint(overrides: Overrides): number {
     result = overrides.nextCrashPoint;
     overrides.nextCrashPoint = null;
   } else if (overrides.winMode === "win") {
+    // Player win: 100x–130x
     result = Math.round((100 + Math.random() * 30) * 100) / 100;
   } else if (overrides.winMode === "loss") {
-    // House win: random between 0.10x and 0.99x (below 1x = instant bust)
-    result = Math.round((0.10 + Math.random() * 0.89) * 100) / 100;
+    // House win: always 1.00x–1.05x
+    result = 1.00 + Math.round(Math.random() * 5) / 100;
   } else {
-    // Fair: tiered distribution
+    // Normal: 5-tier weighted distribution, all within 1.00x–1.10x
     const r = Math.random();
-    if (r < 0.70) {
-      result = 1.00;
-    } else if (r < 0.90) {
-      result = Math.round((1.01 + Math.random() * 1.99) * 100) / 100;
-    } else {
-      result = Math.round((3.01 + Math.random() * 1.99) * 100) / 100;
-    }
+    let lo = 1.00, hi: number;
+    if      (r < 0.70) hi = 1.06; // tier 1 — 70%
+    else if (r < 0.90) hi = 1.08; // tier 2 — 20%
+    else if (r < 0.95) hi = 1.07; // tier 3 —  5%
+    else if (r < 0.98) hi = 1.09; // tier 4 —  3%
+    else               hi = 1.10; // tier 5 —  2%
+    result = Math.round((lo + Math.random() * (hi - lo)) * 100) / 100;
   }
   return Math.floor(Math.min(result, HARD_CAP) * 100) / 100;
 }
@@ -69,7 +70,7 @@ function pct(n: number, total: number) {
 // ─── 1. HOUSE WIN MODE (loss) ─────────────────────────────────────────────────
 console.log(`\n${"─".repeat(60)}`);
 console.log(`TEST: House Win (loss mode) — ${RUNS} rounds`);
-console.log(`Expected: ALL crash points between 0.10x and 0.99x`);
+console.log(`Expected: ALL crash points between 1.00x and 1.05x`);
 console.log(`${"─".repeat(60)}`);
 
 {
@@ -79,26 +80,25 @@ console.log(`${"─".repeat(60)}`);
     results.push(v);
   }
 
-  const allBelow1 = results.every(v => v < 1.0);
-  const allAbove010 = results.every(v => v >= 0.10);
+  const allAbove100 = results.every(v => v >= 1.00);
+  const allBelow105 = results.every(v => v <= 1.05);
   const min = Math.min(...results);
   const max = Math.max(...results);
   const avg = results.reduce((a, b) => a + b, 0) / RUNS;
 
-  assert(allBelow1,   `All ${RUNS} crash points < 1.00x (got max=${max})`);
-  assert(allAbove010, `All crash points >= 0.10x (got min=${min})`);
-  assert(max <= 0.99, `Max crash point <= 0.99x (got ${max})`);
+  assert(allAbove100, `All ${RUNS} crash points >= 1.00x (got min=${min})`);
+  assert(allBelow105, `All crash points <= 1.05x (got max=${max})`);
 
   console.log(`  Min:  ${min.toFixed(2)}x`);
   console.log(`  Max:  ${max.toFixed(2)}x`);
   console.log(`  Avg:  ${avg.toFixed(4)}x`);
-  console.log(`  All below 1.00x: ${allBelow1 ? "✓ YES" : "✗ NO"}`);
+  console.log(`  All in 1.00x–1.05x: ${allAbove100 && allBelow105 ? "✓ YES" : "✗ NO"}`);
 }
 
 // ─── 2. FAIR MODE (normal) ───────────────────────────────────────────────────
 console.log(`\n${"─".repeat(60)}`);
 console.log(`TEST: Fair/Normal mode — ${RUNS} rounds`);
-console.log(`Expected: ~70% at 0.00-1.00x | ~20% at 1.01-3.00x | ~10% at 3.01-5.00x`);
+console.log(`Expected: all in 1.00x–1.10x | ~70% ≤1.06x | ~20% ≤1.08x | ~5% ≤1.07x | ~3% ≤1.09x | ~2% ≤1.10x`);
 console.log(`${"─".repeat(60)}`);
 
 {
@@ -108,27 +108,25 @@ console.log(`${"─".repeat(60)}`);
     results.push(v);
   }
 
-  const tier1 = results.filter(v => v >= 0.00 && v <= 1.00).length;
-  const tier2 = results.filter(v => v > 1.00 && v <= 3.00).length;
-  const tier3 = results.filter(v => v > 3.00 && v <= 5.00).length;
-  const outOfRange = results.filter(v => v < 0.00 || v > 5.00).length;
-
+  const allAbove100  = results.every(v => v >= 1.00);
+  const allBelow110  = results.every(v => v <= 1.10);
+  const outOfRange   = results.filter(v => v < 1.00 || v > 1.10).length;
   const min = Math.min(...results);
   const max = Math.max(...results);
 
-  // Allow ±8% tolerance for statistical variance over 1000 runs
-  assert(tier1 >= 620 && tier1 <= 780, `Tier1 (0.00-1.00x): expected ~700, got ${tier1} (${pct(tier1, RUNS)})`);
-  assert(tier2 >= 160 && tier2 <= 240, `Tier2 (1.01-3.00x): expected ~200, got ${tier2} (${pct(tier2, RUNS)})`);
-  assert(tier3 >= 70  && tier3 <= 130, `Tier3 (3.01-5.00x): expected ~100, got ${tier3} (${pct(tier3, RUNS)})`);
-  assert(outOfRange === 0,             `No crashes outside 0.00x–5.00x (got ${outOfRange})`);
-  assert(min >= 0.00,                  `Min crash >= 0.00x (got ${min})`);
-  assert(max <= 5.00,                  `Max crash <= 5.00x (got ${max})`);
+  assert(allAbove100,      `All crashes >= 1.00x (got min=${min})`);
+  assert(allBelow110,      `All crashes <= 1.10x (got max=${max})`);
+  assert(outOfRange === 0, `No crashes outside 1.00x–1.10x (got ${outOfRange})`);
 
-  console.log(`  Tier 1 (0.00-1.00x): ${tier1} rounds = ${pct(tier1, RUNS)}  [target ~70%]`);
-  console.log(`  Tier 2 (1.01-3.00x): ${tier2} rounds = ${pct(tier2, RUNS)}  [target ~20%]`);
-  console.log(`  Tier 3 (3.01-5.00x): ${tier3} rounds = ${pct(tier3, RUNS)}  [target ~10%]`);
-  console.log(`  Out of range:        ${outOfRange} rounds`);
+  const inTier1 = results.filter(v => v <= 1.06).length;
+  const inTier2up = results.filter(v => v > 1.06).length;
+  // All 5 tiers start at 1.00, so values ≤1.06 appear in all tiers (not just tier1).
+  // Expected ≥85% ≤1.06x based on probability math across all tiers.
+  assert(inTier1 >= 800, `≥80% of rounds land ≤1.06x (got ${inTier1}/1000)`);
+
   console.log(`  Min: ${min.toFixed(2)}x  Max: ${max.toFixed(2)}x`);
+  console.log(`  All in 1.00x–1.10x: ${allAbove100 && allBelow110 ? "✓ YES" : "✗ NO"}`);
+  console.log(`  ≤1.06x: ${inTier1} (${pct(inTier1, RUNS)})  >1.06x: ${inTier2up} (${pct(inTier2up, RUNS)})`);
 }
 
 // ─── 3. PLAYER WIN MODE ──────────────────────────────────────────────────────
@@ -185,11 +183,11 @@ console.log(`${"─".repeat(60)}`);
   assert(first === 7.77, `First round crash at 7.77x (got ${first})`);
   assert(ov.nextCrashPoint === null, `nextCrashPoint consumed after first use`);
 
-  // Second round should use normal distribution
+  // Second round should use normal distribution (1.00x–1.10x)
   let normalCount = 0;
   for (let i = 0; i < 100; i++) {
     const v = computeCrashPoint({ winMode: "normal", forcedCrash: null, nextCrashPoint: null });
-    if (v >= 1.00 && v <= 5.00) normalCount++;
+    if (v >= 1.00 && v <= 1.10) normalCount++;
   }
   assert(normalCount === 100, `After one-shot consumed, subsequent rounds use normal distribution`);
   console.log(`  One-shot 7.77x: first=${first}x ✓`);
@@ -240,9 +238,9 @@ console.log(`${"─".repeat(60)}`);
   assert(engineOverrides.minBet === 5,       `minBet propagated: 5`);
   assert(engineOverrides.maxBet === 1000,    `maxBet propagated: 1000`);
 
-  // Verify loss mode generates sub-1x after propagation
+  // Verify loss mode generates 1.00x–1.05x after propagation
   const v = computeCrashPoint({ winMode: engineOverrides.winMode, forcedCrash: null, nextCrashPoint: null });
-  assert(v < 1.00, `After admin sets loss mode, crash < 1.00x (got ${v})`);
+  assert(v >= 1.00 && v <= 1.05, `After admin sets loss mode, crash 1.00x–1.05x (got ${v})`);
   console.log(`  Admin → engine propagation: ✓`);
   console.log(`  Loss mode crash after propagation: ${v}x ✓`);
 }
@@ -253,8 +251,8 @@ console.log(`RESULTS: ${passed} passed  ${failed} failed  (${passed + failed} to
 if (failed === 0) {
   console.log(`ALL TESTS PASSED ✓`);
   console.log(`\nDistribution verified across ${RUNS} simulated rounds per mode.`);
-  console.log(`House win: always sub-1x (0.10x–0.99x) ✓`);
-  console.log(`Fair mode: 70/20/10 tiered distribution ✓`);
+  console.log(`House win (loss): always 1.00x–1.05x ✓`);
+  console.log(`Fair mode: 5-tier distribution all within 1.00x–1.10x ✓`);
   console.log(`Player win: 100x–130x ✓`);
   console.log(`Admin controls: propagated correctly ✓`);
 } else {

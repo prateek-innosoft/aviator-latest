@@ -229,9 +229,9 @@ authRouter.patch(
       .object({
         min_bet:          z.coerce.number().min(0.01).max(1_000_000).optional(),
         max_bet:          z.coerce.number().min(1).max(10_000_000).optional(),
-        next_crash_point: z.coerce.number().min(0.10).max(130).nullable().optional(),
+        next_crash_point: z.coerce.number().min(1.00).max(130).nullable().optional(),
         win_mode:         z.enum(["normal", "win", "loss"]).optional(),
-        forced_crash:     z.coerce.number().min(0.10).max(130).nullable().optional(),
+        forced_crash:     z.coerce.number().min(1.00).max(130).nullable().optional(),
       })
       .refine(
         (d) => d.min_bet === undefined || d.max_bet === undefined || d.min_bet <= d.max_bet,
