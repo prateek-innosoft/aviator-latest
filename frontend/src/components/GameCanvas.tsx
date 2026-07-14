@@ -36,10 +36,10 @@ function pathPoint(u: number, W: number, H: number): Pt {
 }
 
 /** Map the live multiplier to curve progress (0..1), smooth + saturating.
- * Works for sub-1x values (house win mode) — no floor clamp so the plane
- * visually climbs from 0.00x through 0.10x, 0.50x, 0.99x etc. */
+ * Multiplier starts at 1.0x (progress 0) and grows exponentially from there. */
 function progressFromMultiplier(m: number): number {
-  return 1 - Math.exp(-(Math.max(0, m)) * 0.4);
+  const adjusted = Math.max(0, m - 1.0); // Offset so 1.0x maps to 0
+  return 1 - Math.exp(-adjusted * 0.4);
 }
 
 /** Central glow colour, interpolated across multiplier tiers. */
@@ -369,6 +369,7 @@ export function GameCanvas() {
               </div>
             )}
             <div
+              data-testid="live-multiplier"
               className={`text-stroke-dark font-extrabold tabular-nums leading-none ${
                 phase === "crashed" ? "text-brand" : "text-white"
               }`}
@@ -391,7 +392,7 @@ export function GameCanvas() {
               {lastWinToast.mult.toFixed(2)}x
             </span>
             <span className="text-[13px] font-bold text-white">
-              +{lastWinToast.win.toFixed(2)} ZAR
+              +{lastWinToast.win.toFixed(2)} INR
             </span>
           </div>
         </div>

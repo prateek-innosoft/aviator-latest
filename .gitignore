@@ -22,3 +22,9 @@ share-link.url
 
 # OS / editor cruft
 .DS_Store
+
+# Supabase CLI local cache — leaks the project/org ref, never commit it.
+# (No longer relevant anyway: Supabase itself was fully removed from this
+# codebase — see backend/src/store.ts — but the CLI can still regenerate
+# this folder locally if anyone runs `supabase link` again.)
+**/supabase/.temp/

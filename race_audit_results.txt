@@ -1,0 +1,510 @@
+==========================================
+SESSION: ses_0b92dcf57ffeCQWNSgnsw3JS73
+==========================================
+Here is the TOCTOU/race-condition audit for `backend/src/gameEngine.ts`.
+
+---
+
+## RACE 1 (Critical) — `beginFlying` async gap stomps crash-sequence state
+
+**File:** `backend/src/gameEngine.ts`, lines 416–424, interacting with `forceCrashNow` (462–475) and `beginCrash` (477–515).
+
+### The async gap
+
+`beginBetting` (line 395) calls `this.beginFlying()` **without `await`**:
+
+```ts
+// gameEngine.ts:393-396
+if (this.countdown <= 0) {
+  this.clearTimer();
+  this.beginFlying();   // NOT awaited
+}
+```
+
+`beginFlying` runs synchronously through its early state setup (lock round, set phase to "flying", set `roundPaidOut = 0`, etc.) and then hits an `await` at **line 416**:
+
+```ts
+// gameEngine.ts:413-421
+if (this.supabaseRoundId) {
+  const rid = this.supabaseRoundId;
+  try {
+    const { error } = await supabase.rpc("start_round", { p_round_id: rid });  // ← YIELDS
+  }
+}
+```
+
+At this point the round's phase is already `"flying"`, `multiplier = 1.0`, `roundPaidOut = 0` — but the tick loop **has not been set up yet** (it's set at line 424, after the await).
+
+### The crash sequence that fires during the gap
+
+Between the `await` on line 416 and the tick-loop setup on line 424, socket events are processed. A client that received `round:flying` (emitted at line 410, *before* the gap) can send a `bet:cashout`. If that cashout exhausts the round budget, `recordPaidOut` (line 158–169) calls `forceCrashNow` (line 167):
+
+```ts
+// gameEngine.ts:462-475
+forceCrashNow(): void {
+  if (this.phase !== "flying" || this.crashing) return;  // passes: phase IS "flying"
+  this.crashing = true;
+  this.crashPoint = this.multiplier;  // multiplier is 1.0!
+  this.clearTimer();                  // timer is null → no-op
+  // ... emit "tick:multiplier" at 1.0x ...
+  void this.beginCrash();             // runs synchronously:
+                                      //   phase="crashed",
+                                      //   this.timer = setTimeout(beginBetting, 3000)
+}
+```
+
+`beginCrash` runs its synchronous body (479–514), sets `this.phase = "crashed"`, and crucially at **line 514**:
+
+```ts
+this.timer = setTimeout(() => this.beginBetting(), CRASH_PAUSE_MS);
+```
+
+This schedules the **next round**.
+
+### The overwrite
+
+Execution then returns to `beginFlying`'s continuation after the await:
+
+```ts
+// gameEngine.ts:423-424
+this.clearTimer();  // ← CLEARS the setTimeout from beginCrash!
+this.timer = setInterval(() => { ... }, TICK_MS);  // ← starts a stale tick loop
+```
+
+**Concrete sequence that breaks:**
+
+| Step | What happens |
+|------|-------------|
+| 1 | `beginBetting` interval fires → `this.beginFlying()` (no await) |
+| 2 | `lockRoundAndSelectCrash()` — crash point chosen |
+| 3 | `this.phase = "flying"`, `this.multiplier = 1.0`, `this.roundPaidOut = 0` |
+| 4 | `emit("round:flying")` — clients notified |
+| 5 | `await supabase.rpc("start_round", ...)` — **yields** |
+| 6 | Client sends cashout → `recordPaidOut` → `forceCrashNow()` → `beginCrash()` → `this.phase = "crashed"`, `this.timer = setTimeout(beginBetting, 3000)` |
+| 7 | `await` resolves, `beginFlying` resumes |
+| 8 | `this.clearTimer()` at line 423 **kills the setTimeout** from step 6 |
+| 9 | `this.timer = setInterval(tickLoop, TICK_MS)` starts a tick loop for a round that's already `phase === "crashed"` |
+| 10 | Every tick: `if (this.crashing) return;` → no-op forever. **Next betting round never starts.** |
+
+The engine is permanently stuck in "crashed" phase with a do-nothing interval ticking. No further rounds launch.
+
+---
+
+## RACE 2 (High) — Provisional cashOut state triggers irreversible forceCrash before async DB validation completes
+
+**Files:** `backend/src/index.ts` lines 339–357 (the async gap), `backend/src/gameEngine.ts` lines 563–581 (`cashOut`), 158–169 (`recordPaidOut`), 462–475 (`forceCrashNow`), 171–185 (`undoCashOut`).
+
+### The pattern: modify-then-validate
+
+The `bet:cashout` socket handler in `index.ts` modifies engine state **before** the database confirms the withdrawal is valid:
+
+```ts
+// index.ts:339 — engine state mutated FIRST
+const locked = engine.cashOut(socket.id, panel, snapshotMultiplier);
+// bet.cashedOut = true, roundPaidOut incremented
+
+// index.ts:348 — DB validated SECOND (async)
+const { data, error } = await supabase.rpc("cashout_bet", {
+  p_user_id: userId,
+  p_round_id: snapshotRoundId,
+  p_panel: panel,
+  p_multiplier: snapshotMultiplier,
+  p_reference: socket.id,
+});
+// ... if error/not-ok: engine.undoCashOut(socket.id, panel) at lines 357, 371
+```
+
+Between `cashOut` (line 339) and the `await` (line 348) there is no gap — they're in the same synchronous block. **The window opens after the `await` yields**: the engine state already reflects the tentatively-cashed-out bet, and it remains in that state until the RPC resolves.
+
+### How it causes a premature crash
+
+If bet A's pending cashout has nudged `roundPaidOut` close to the budget ceiling, another socket's cashout handler (bet B) running in the gap can observe the inflated `roundPaidOut` and push it over the edge:
+
+| Step | Handler A (betA) | Handler B (betB) |
+|------|-----------------|-----------------|
+| 1 | `cashOut(betA, win=100)` → `roundPaidOut` 0→100, `betA.cashedOut=true` | — |
+| 2 | `await supabase.rpc(...)` — **yields** | — |
+| 3 | — | `cashOut(betB, win=100)` → `wouldExceedBudget(100)`: `roundPaidOut=100`, `max=200`, check passes → `roundPaidOut` 100→200 → `recordPaidOut` → `roundPaidOut >= maxPayout - 0.001` → **`forceCrashNow()`** |
+| 4 | — | Round crashes at the current multiplier. **Irreversible.** |
+| 5 | RPC resolves → `!result.ok` → `undoCashOut(betA)` → `roundPaidOut` back to 200−100 = **100** | — |
+
+After step 5 the engine's `roundPaidOut` is 100 (correct — only betB's 100 was confirmed), but the round has already crashed at a lower multiplier than it would have otherwise. Players who hadn't cashed out lost their bets at the premature crash point.
+
+**Why this is a TOCTOU:** `cashOut`'s internal `wouldExceedBudget` check (line 572 of `gameEngine.ts`) sees state that is correct *at check time*, but the state is **provisional** — the database can still reject it. If the DB rejects betA, the budget level that triggered `forceCrashNow` was an artifact of a transaction that never completed.
+
+**Contrast with `bet:place` (index.ts:185–211)**, which calls the database **first** and only updates engine state after the DB confirms success. The `bet:cashout` flow has the order reversed.
+
+---
+
+## No other TOCTOU races found
+
+- **`lockRoundAndSelectCrash` and `nextCrashPoint`** (line 241–250): the function is entirely synchronous — reads the override, uses it, nulls it, all in one contiguous block. Admin calls to `setNextCrashOverride` cannot interleave because JS is single-threaded; they'd queue for the next event-loop iteration after this function returns. **Not a race.**
+
+- **`recordPaidOut` → `forceCrashNow` guard at line 162–168**: reads `economyActiveForRound`, `roundPaidOut`, `roundMaxPayout`, `phase`, `crashing` — all synchronously with no await gap before the `forceCrashNow` call on line 167. **No TOCTOU.**
+
+- **`beginFlying` tick loop + `forceCrashNow` double-crash guard**: the tick checks `this.crashing` at line 425 before any action. `forceCrashNow` sets `crashing = true` and clears the interval timer at line 466. Even if another code path calls `beginCrash` shortly after, its first line (478) guards with `if (this.phase === "crashed") return;`. The two guards are redundant but effective. **No race between the two paths.**
+
+- **`undoCashOut` / `cashOut` double-process for the same socket+panel**: `cashOut` filters for `!b.cashedOut` (line 566). Once `cashedOut` is `true`, a second `cashOut` for the same bet returns `null`. `undoCashOut` flips it back to `false`, but this is the intended undo-then-retry flow, not a race. **No TOCTOU.**
+
+- **`this.seed` in the fire-and-forget IIFE (lines 497–511)**: the argument `{ p_seed: this.seed, ... }` to `supabase.rpc()` is evaluated **synchronously** within the IIFE's initial execution, before any `await` inside the IIFE. The `await` only suspends *after* the RPC call has been dispatched. So `this.seed` is captured at the correct time. **Not a bug.**
+
+---
+
+## Summary
+
+| # | Severity | File:Line | Bug |
+|---|----------|-----------|-----|
+| 1 | **Critical** | `gameEngine.ts:416-424` | `beginFlying`'s `await` gap lets a budget-exhaustion cashout call `forceCrashNow` → `beginCrash`, which schedules the next round via `setTimeout`. When `beginFlying` resumes, `clearTimer()` at line 423 destroys that timeout and line 424 starts a stale tick loop for an already-crashed round. **Engine never schedules another betting phase — deadlock.** |
+| 2 | **High** | `index.ts:339-357` / `gameEngine.ts:563-581,158-169` | Socket handler mutates engine state (`cashOut` → `recordPaidOut` → inflates `roundPaidOut`) **before** the async DB RPC confirms the withdrawal. If a second cashout exhausting the budget runs during the async gap, `forceCrashNow` fires based on provisional state. The first cashout may later be reversed by `undoCashOut`, but the force-crash is already irreversible, crashing the round at a lower multiplier than warranted. |
+
+==========================================
+SESSION: ses_0b92cb13bffe8XJbbyBsHyV4TM
+==========================================
+Now I have a thorough understanding of the code. Let me analyze each of the five categories systematically.
+
+---
+
+Here is the TOCTOU audit of `backend/src/index.ts`:
+
+---
+
+**1. `bet:place` — Gap between `await supabase.rpc("place_bet", ...)` and `engine.placeBet()` (line 185 → 201)**
+
+This is a **genuine race condition**.
+
+Sequence that breaks:
+1. Round is in `"betting"` phase. Client A (userId) sends `bet:place`. The handler passes the `phase !== "betting"` guard at line 180.
+2. `await supabase.rpc("place_bet", ...)` is issued (line 185). The Supabase RPC debits the wallet and records the bet in the DB.
+3. While that RPC is in flight, the betting timer fires — `beginFlying()` (gameEngine.ts:395) runs, sets `this.phase = "flying"`, and the round starts ticking.
+4. The RPC returns with `result.ok = true`. The handler then calls `engine.placeBet(socket.id, panel, amount, userId)` at line 201.
+5. `engine.placeBet()` checks `this.phase !== "betting"` at line 533 and **returns false** — the phase is now `"flying"`.
+6. The handler goes into the rollback branch (lines 202–211), calls `supabase.rpc("cancel_bet", ...)` to refund the wallet, and emits `bet:rejected`.
+
+**Net effect**: The player's wallet is debited and then credited back. This is *financially* a no-op — assuming `cancel_bet` RPC is atomic and the `place_bet` RPC ran to completion before `cancel_bet`. So the user doesn't lose or gain money permanently. However, there is a **sub-issue**: if the server crashes or the RPC call to `cancel_bet` fails (network error at line 203), the money is debited from the wallet with no bet ever registered in the engine, and no corresponding refund on record. The `bet:rejected` is sent to the socket but the DB wallet is now off by `amount` and there is no retry logic. This is a **loss-of-funds risk** on server failure between lines 202 and 204.
+
+**Verdict**: Financially safe during normal operation (the double-RPC pattern does refund), but a crash between `place_bet` succeeding and `cancel_bet` succeeding will permanently lose the user's money. This is a genuine TOCTOU with a financial consequence window.
+
+---
+
+**2. `bet:cashout` — Snapshot races and double-cashout (lines 326–354)**
+
+This is a **genuine race condition**. The guard and cashout sequence:
+1. `const snapshotMultiplier = engine.multiplier` (line 326) — a non-atomic read.
+2. `const locked = engine.cashOut(socket.id, panel, snapshotMultiplier)` (line 339) — this is an engine-level guard that marks the bet as cashed out in-memory.
+3. `await supabase.rpc("cashout_bet", ...)` (line 348) — the DB write.
+
+The **double-cashout race**: Two `bet:cashout` events for the same `socket.id` + `panel` arrive within a single event-loop tick (or very close together):
+- Client fires `bet:cashout` twice rapidly.
+- First invocation: reads `snapshotMultiplier`, calls `engine.cashOut(socket.id, panel, snapshotMultiplier)` — this **succeeds** (bet is marked `cashedOut = true` in memory) and returns the locked bet.
+- Then `await supabase.rpc("cashout_bet", ...)` is hit.
+- *While that await is pending*, the second invocation reads `snapshotMultiplier` (still valid), calls `engine.cashOut(socket.id, panel, snapshotMultiplier)` — this finds `b.cashedOut === true` at line 566 and **returns null** (correctly). So the engine-level guard holds.
+
+**But wait** — the second invocation could also race *before* the first one reaches `engine.cashOut`. If both events are synchronous (both in the microtask queue before either executes `engine.cashOut`), the sequence is:
+1. Event A: reads `snapshotMultiplier` (1.20), reads `engine.getPlayerBet(...)` (both return valid bet).
+2. Event B: reads `snapshotMultiplier` (1.20), reads `engine.getPlayerBet(...)` (both return the same bet).
+3. Event A: calls `engine.cashOut(...)` — succeeds, marks bet as cashed out.
+4. Event B: calls `engine.cashOut(...)` — returns null because `b.cashedOut` is now true.
+
+So the engine-level `cashOut()` function's guard (line 565: `&& !b.cashedOut`) **does** prevent a double cashout. This is **safe** because all JavaScript socket event handlers run on the same thread; they don't interleave between non-await instructions. The guard check and the mutation (`bet.cashedOut = true` at line 574) happen synchronously without an await, so no two handlers can interleave between the check and the set.
+
+**Verdict on 2**: Safe. The `!b.cashedOut` guard in `engine.cashOut()` is an atomic read-modify-write within a single synchronous execution block.
+
+---
+
+**3. Double-fire across events — `bet:cancel` and `bet:cancelWithAmount`**
+
+Both rely on `engine.cancelBet()` at lines 252 and 304/309, which does a synchronous filter (game.ts:554-561):
+```ts
+this.playerBets = this.playerBets.filter(
+  (b) => !(b.socketId === socketId && b.panel === panel),
+);
+```
+If two `bet:cancel` events sequence:
+1. Event A: `engine.cancelBet(socket.id, panel)` removes the bet. Returns `true` (length decreased).
+2. Event A: `await supabase.rpc("cancel_bet", ...)` is pending.
+3. Event B: `engine.cancelBet(socket.id, panel)` — bet is already gone. Returns `false`. The handler sends `bet:cancel_failed`.
+
+This is safe. The synchronous `filter` guards against double-cancel at the engine level.
+
+---
+
+**4. `disconnect` handling — dangling I/O after disconnect (line 429)**
+
+The `disconnect` handler at line 429-432 just deletes from two maps. It does **not** prevent already-in-flight async handlers from continuing. Consider:
+
+1. Socket sends `bet:place` (authenticated path).
+2. The handler gets past line 180, enters `await supabase.rpc("place_bet", ...)` at line 185.
+3. While that await is pending, the socket disconnects. The `disconnect` handler runs: `authedSockets.delete(socket.id)`.
+4. The RPC returns. The handler continues and calls `socket.emit("bet:accepted", ...)` at line 212.
+
+**Is this a bug?** Socket.IO's `socket.emit` on a disconnected socket is a no-op (it just doesn't deliver). `authedSockets.delete(socket.id)` at line 431 happens *after* step 4, but that doesn't cause harm — the map entry is cleaned up. The `socket.emit` silently fails, which is benign. No state corruption occurs because the engine's `playerBets` array mutation (`engine.placeBet()` at line 201) happens synchronously and is already committed before any await.
+
+However, in `bet:cancelWithAmount` (lines 282-320), an authenticated cancel:
+1. Calls `await supabase.rpc("cancel_bet", ...)` at line 288.
+2. Disconnect happens mid-await.
+3. RPC returns, handler calls `socket.emit("bet:cancelled", ...)` — no-op.
+4. But `engine.cancelBet(socket.id, panel)` at line 304 runs after the await — so the engine's in-memory state is correctly cleaned up. No corruption.
+
+**Verdict**: Safe. The engine state mutations happen synchronously before or after awaits, so they are never lost. The socket emits on a disconnected socket are no-ops but cause no crash.
+
+---
+
+**5. Two `socket.on` handlers mutating the same engine state concurrently**
+
+All socket event handlers in this codebase are async but run on Node.js's single main thread. Two handlers **cannot** interleave between individual statements — they only yield at `await` points. This means:
+- A read of `engine.phase`, a test, and a synchronous write to `engine.playerBets` happen atomically from the perspective of other handlers.
+- Two handlers can interleave *only* at `await` boundaries.
+
+The dangerous interleave pattern is:
+1. Handler A reads state (e.g., `engine.phase === "betting"`), then **awaits** something (a Supabase RPC).
+2. Handler B runs during that await — it reads the same state, **awaits** something of its own.
+3. Handler A resumes after its await, but the state it already read may now be stale.
+
+This is exactly the **`bet:place` gap** described in item 1. The only other such gap is in **`bet:cancel` (authenticated path, lines 250–266)**:
+- Line 252: `engine.cancelBet(socket.id, panel)` — removes bet synchronously.
+- Line 256: `await supabase.rpc("cancel_bet", ...)` — while pending, another event could arrive.
+- But the bet is **already removed** from engine state by line 252, so any second `cancelBet` for the same bet will just return false. No double-cancel.
+
+---
+
+### Summary of findings
+
+| # | Location | Bug | Severity |
+|---|----------|-----|----------|
+| 1 | `index.ts:185-211` | **TOCTOU**: wallet debited by RPC, then phase changes to flying before `engine.placeBet()`. The rollback RPC (`cancel_bet`) at 203-208 refunds the wallet, creating a *temporary* financial inconsistency. If the server crashes between the successful `place_bet` RPC and the `cancel_bet` RPC, the user loses the bet amount permanently with no active bet in the engine. | **Medium** — window is small but consequence is real money loss. |
+| 2 | `index.ts:326-354` | No race. The `engine.cashOut()` guard is synchronous (check `!b.cashedOut` + set `cashedOut = true` with no intervening await), so concurrent double-cashout cannot both pass. | **Safe** |
+| 3 | `index.ts:248-279, 282-320` | No race. `engine.cancelBet()` uses synchronous `filter` — second invocation finds no bet. | **Safe** |
+| 4 | `index.ts:429-432` | No race. `socket.emit` on a disconnected socket is a silent no-op in Socket.IO; engine state mutations happen synchronously and are committed before any awaits that could be interrupted. | **Safe** |
+| 5 | `index.ts:176-246` | The only cross-handler race is #1 above — the `bet:place` TOCTOU. No other handlers interleave dangerously because engine methods use synchronous guards. | **Covered by #1** |
+
+**The single genuine TOCTOU bug** is `index.ts:185-211`: the window between the `place_bet` RPC and `engine.placeBet()`. The rollback exists but is not crash-safe — if the server dies between the two RPC calls, the user loses funds. The fix would be to check the phase *again* after the RPC returns (and before calling `engine.placeBet`), but since the rollback is also an async RPC, true atomicity requires either: (a) moving the engine mutation into a single Supabase RPC that atomically debits + registers the bet in the DB, or (b) making the Supabase DB round row available to check the phase at the DB level (e.g., a round status column that the `place_bet` RPC itself validates).
+
+==========================================
+SESSION: ses_0b92b94ecffebh9Vs7Y12JB3fT
+==========================================
+I've read all four migration files thoroughly. Here is my race-condition audit:
+
+---
+
+## TOCTOU Audit Report — `backend/supabase/migrations/000002_game_rpc_functions.sql`
+
+### TOCTOU Bug Found
+
+**1. `cancel_bet` — round status read without `FOR UPDATE`**
+
+**File:** `000002_game_rpc_functions.sql:76`
+
+```sql
+select status into v_round_status from rounds where id = p_round_id;       -- line 76, NO lock
+if v_round_status <> 'betting' then
+    return jsonb_build_object('ok', false, 'reason', 'not_betting');       -- line 77-79
+end if;
+
+select id, amount into v_bet_id, v_amount
+from bets where user_id = p_user_id and round_id = p_round_id
+  and panel = p_panel and status = 'locked' for update;                    -- line 81-84, locks bet
+```
+
+The round status is read *without* row-level locking. Between the unlocked read (line 76) and the `FOR UPDATE` on the bet row (line 81), another transaction can call `start_round` (line 238) and transition the round from `'betting'` → `'flying'`. The function never re-checks the round status after acquiring the bet lock, so it proceeds to refund the wallet even though the round is now live.
+
+**Concrete break sequence:**
+1. Round R is `'betting'`. User U has a `'locked'` bet of 100 on R.
+2. **T1 (cancel_bet):** `SELECT status FROM rounds` → `'betting'` (line 76).
+3. **T2 (start_round):** `UPDATE rounds SET status='flying' WHERE id=R` — commits.
+4. **T1:** `SELECT ... FROM bets ... FOR UPDATE` — bet is still `'locked'`, acquires lock (line 81).
+5. **T1:** Locks wallet, refunds 100, marks bet `'cancelled'` — commits.
+6. User gets a full refund on a bet from a round that has already taken off.
+
+**Impact:** Game-integrity violation — a user can get a free bailout from a live round by racing `cancel_bet` against `start_round`. Not a double-spend (wallet math is correct per the refund), but an unfair-advantage timing bug.
+
+**Fix:** Add `FOR UPDATE` to the round SELECT on line 76 (locking the round row so `start_round` can't flip it while `cancel_bet` is in flight), or re-verify round status after the bet lock is acquired.
+
+---
+
+### No Issues Found In
+
+| Function | Why safe |
+|---|---|
+| **`place_bet`** (line 1) | `SELECT ... FOR UPDATE` on wallet (line 24) serializes concurrent calls for the same user before the balance check. The version-based optimistic lock (line 48) adds a second safeguard. No TOCTOU between check and debit. |
+| **`cashout_bet`** (line 113) | Round status read without lock (line 128) is *mitigated* — the bet-level `WHERE status='locked' FOR UPDATE` (line 135) prevents any payout on an already-resolved or double-cashed bet. Two calls for the same bet serialise on the bet row lock; the second sees `'cashed_out'` and returns `'not_found'`. No double-payout path. |
+| **`resolve_round`** (line 175) | **Idempotent** — `UPDATE rounds SET status='crashed' WHERE status='flying'` (line 186-192) is a single atomic conditional; a second call finds `status='crashed'`, updates 0 rows, and returns early. The bets loop uses `FOR UPDATE`, so concurrent `cashout_bet`/`cancel_bet` on the same bet serialise correctly. No double-process or double-write on `audit_rounds`. |
+| **`create_round`** (line 213) | Simple INSERT — no state reads or conditional writes. Race-free. |
+| **`start_round`** (line 231) | `UPDATE rounds SET status='flying' WHERE status='betting'` is atomic. Two concurrent calls serialise; the second sees `'flying'`, updates 0 rows, returns early. |
+
+---
+
+### Summary
+
+**1 genuine TOCTOU bug:** `cancel_bet` line 76 — unguarded round status read enables cancel-after-launch. **No double-spend or fund-corruption races** exist. Wallet operations in all functions use `SELECT ... FOR UPDATE` (often with an additional optimistic version check) which prevents lost updates and concurrent overdrafts.
+
+==========================================
+SESSION: ses_0b92a76ddffeargqD915T8IGwD
+==========================================
+Here is my full TOCTOU audit report for the two files.
+
+---
+
+## TOCTOU Race Condition Audit: `adminControls.ts` + `authRouter.ts`
+
+**TL;DR: No additional TOCTOU bugs beyond the one you already identified.** Each of your five specific questions is addressed below.
+
+---
+
+### (1) Any other read-then-write pattern in these files?
+
+**None.** The only read-then-write that crosses an `await` boundary is `saveAdminControls` (the known bug at `adminControls.ts:139` → `:190`). All other writes are either:
+
+- **Read-only functions** — `loadAdminControls` (`adminControls.ts:111`) does multiple reads with fallbacks but never writes based on them. It returns a snapshot — concurrent mutations are irrelevant because no decision is acted upon.
+- **Synchronous writes** — `applyControlsToEngine` (`adminControls.ts:212-221`) sets 8 properties with no `await` between reads and writes. JS single-threading means no code interleaves between assignment 1 and assignment 8. The engine's tick cannot "see" a half-applied set of controls.
+- **Singleton writes** — `syncBetLimitsConfig` (`adminControls.ts:71`) is a single upsert, not a read-then-write.
+
+---
+
+### (2) Login rate limiter — can concurrent requests bypass via a race?
+
+**No.** The `express-rate-limit` v8.5.2 default MemoryStore's `increment` (`node_modules/express-rate-limit/dist/index.mjs:73-81`):
+
+```js
+async increment(key) {
+    const client = this.getClient(key);   // sync Map lookup
+    client.totalHits++;                    // sync increment
+    return client;
+}
+```
+
+There is **no `await` inside `increment`**. The body runs synchronously to completion before the Promise resolves. Although the middleware `await`s the returned Promise at line 868, the increment itself (`getClient` → `totalHits++`) is atomic in Node's single-threaded model — two concurrent requests cannot interleave between the read and the write of `client.totalHits`. Sequential requests see strictly increasing counters:
+
+| Req | Counter reads | Counter writes | Check |
+|---|---|---|---|
+| A | 5 | 6 | 6 ≤ 50 ✓ |
+| B | 6 | 7 | 7 ≤ 50 ✓ |
+
+`skipSuccessfulRequests: true` causes a decrement to fire asynchronously via `response.on("finish")` (line 955). This temporarily inflates the counter while a request is in-flight, making the limiter **stricter** (not more permissive) during concurrent bursts — it's counting in-flight successes as provisional hits until the response completes. This cannot create a bypass.
+
+---
+
+### (3) Token validation — gap between expiry check and use?
+
+**No.** `verifyToken` (`authRouter.ts:42-54`) is fully synchronous — signature verification, JSON parse, and `payload.exp < Date.now()` all run in the same synchronous block with no `await`. `requireAuth` (`:83-99`) calls `verifyToken` and immediately assigns `(req as AuthedRequest).user`. There is no revocation mechanism (tokens are stateless), so there's nothing to race on.
+
+---
+
+### (4) `applyControlsToEngine` called mid-round — partial application risk?
+
+**No.** JS is single-threaded. `applyControlsToEngine` (`adminControls.ts:212-221`) runs as a single synchronous block. The engine tick cannot interleave between `engine.overrides.minBet = ...` and `engine.economy.maxRtpPct = ...`. The round's critical parameters (`crashPoint`, `economyActiveForRound`, `roundMaxPayout`) are already snapshotted during `lockRoundAndSelectCrash()` (`gameEngine.ts:227`) before the round enters the flying phase — these are not re-read from `overrides` during flight. So even if the engine tick ran one microtask later, the round state is consistent (it just sees the new controls for the *next* round).
+
+---
+
+### (5) `syncBetLimitsConfig` partial failure — can DB and in-memory state diverge?
+
+**Data consistency bug, not a TOCTOU race.** The sequence:
+
+1. `admin_controls` upsert succeeds (new min/max)
+2. `config` key `bet_limits` upsert fails
+3. Function returns `{ ok: true }` and `applyControlsToEngine` updates the engine
+
+Now the engine and `admin_controls` table have the new limits, but `config.bet_limits` has the old limits. If the server restarts and `loadAdminControls`'s `admin_controls` read fails for any reason, its fallback `loadFromConfigFallback` (`adminControls.ts:86`) would return stale values. This is a non-atomic two-phase write (not a check-then-use race). If you want to fix it, the `config` upsert should run inside the same transaction as the `admin_controls` upsert, or the function should roll back the `admin_controls` write when `syncBetLimitsConfig` fails.
+
+---
+
+### Summary
+
+| Location | Pattern | TOCTOU? |
+|---|---|---|
+| `adminControls.ts:139` → `:190` | Read `loadAdminControls()`, then upsert | **YES** (known, confirmed — two concurrent PATCH requests both read stale `current`) |
+| `authRouter.ts:59-66` | Rate limiter increment-check | No — MemoryStore increment is effectively atomic in JS single-thread |
+| `authRouter.ts:42-54` | Token verify + expiry check | No — synchronous, no gap |
+| `adminControls.ts:212-221` | `applyControlsToEngine` property assignments | No — synchronous, no interleaving |
+| `adminControls.ts:204-207` | `syncBetLimitsConfig` after upsert | Not a TOCTOU — it's a non-atomic two-phase write, not a check-then-use race |
+
+**Finding: Zero additional TOCTOU bugs beyond the already-identified `saveAdminControls` read-then-write race.**
+
+==========================================
+SESSION: ses_0b9295975ffe7lIlHslLRpzeGE
+==========================================
+Here is the complete TOCTOU audit for the two requested files.
+
+---
+
+## TOCTOU Race-Condition Audit: `gameStore.ts` & `socket.ts`
+
+### Finding #1 (CRITICAL): Duplicate `init()` calls register duplicate socket listeners, causing double bet emissions
+
+**Files:**
+- `gameStore.ts:161-397` — the `init()` function that registers all socket listeners
+- `App.tsx:40-42` — calls `init()` on mount
+- `admin/RateControlPanel.tsx:216-218` — calls `init()` again on mount
+
+**The Bug:**
+Two components call `init()`: `GameApp` (main game) and `RateControlPanel` (admin panel). They are mutually exclusive (App.tsx:87 renders one or the other via ternary), but **navigating between `/` and `/admin` unmounts one and mounts the other**. Since `init()` calls `socket.on(...)` without ever calling `socket.off(...)` or `socket.removeAllListeners()`, every listener is registered a second time on the same socket. Socket.io-client's EventEmitter adds a *new* handler each time — it does not deduplicate.
+
+**Concrete sequence that breaks:**
+
+1. User visits `/admin` → `AdminPanel` mounts → `RateControlPanel` mounts → `init()` call #1 registers handlers A (15+ `socket.on` calls).
+2. User navigates to `/` → `AdminPanel`/`RateControlPanel` unmounts (handlers A remain on the socket, never cleaned). `GameApp` mounts → `init()` call #2 registers handlers B for the **same events**.
+3. When the server emits `round:betting`, **both handler A and handler B fire in sequence**.
+
+**Breaking scenario for auto-bet panels:**
+
+- Handler A runs: captures `prev = get().panels` (queued/autoBet flags from previous round), calls `set()` to reset panels, then `forEach` → auto-bet panel triggers `placeBet()` → emits `bet:place` (1st).
+- Handler B runs: `get().panels` now has `autoBet: true` (preserved by spread in `set()`). `wantsBet = [false, true]` because `autoBet` is still `true`. `set()` resets panels again. `forEach` → auto-bet path: `prev[i].autoBet === true` and `p.amount <= s.balance` → calls `placeBet()` → emits `bet:place` **(2nd — duplicate)**.
+
+Net result: the client sends two `bet:place` messages for a single intended auto-bet. If the server accepts both, the user is double-charged.
+
+**Why every socket handler fires twice after the second `init()` call:**
+
+| Handler | Effect of duplicate |
+|---|---|
+| `round:betting` | Auto-bet placed twice (above). Queued bets also re-emitted. |
+| `tick:multiplier` | Auto cash-out guard (`cashOutPending`) prevents double-cashout for handler B, but the `set()` + `get()` cycle runs twice per tick. |
+| `bet:accepted` / `bet:cancelled` / `bet:cashedout` / `bet:cashout_failed` | All state update logic runs twice per event. Mostly idempotent, but wasteful. |
+| `init` (initial state) | Full state overwrite runs twice per connect. |
+| `betLimits:update` / `balance:sync` | Redundant `set()`, harmless. |
+
+**The root cause is the absence of listener lifecycle management.** The `init()` function (gameStore.ts:161) never calls `socket.off()` or `socket.removeAllListeners()` before registering, so it is not safe to call more than once. Two separate components independently call it, assuming it's idempotent — it is not.
+
+---
+
+### Finding #2 (MODERATE): Auto-bet toggle reads React-closed-over `phase`, then delegates to `placeBet` which re-reads via `get()` — mild desync window
+
+**File:** `BetPanel.tsx:307-315`
+
+```
+if (v && phase === "betting" && !panel.active && !panel.queued && panel.amount <= balance) {
+  placeBet(index);
+}
+```
+
+`phase` here is a React closure captured during the last render. If a `round:flying` server event arrives between render and click, this check passes on stale `phase === "betting"` even though the real phase is now `"flying"`. `placeBet` internally re-checks:
+
+```
+if (s.phase === "betting") { ... } else { // queues for next round }
+```
+
+**Result:** The bet is silently queued for the next round instead of being placed now. The user sees no visual feedback until next round. Not a game-integrity breach (the bet is never lost), but a UX race where a click that "should" work immediately gets deferred.
+
+**Why it's not just "general code quality":** The two-phase check (React closure + `get()`) creates a window where the user's intent is misinterpreted. The outer guard was meant to prevent unnecessary queuing, but its `phase` value is already stale by execution time.
+
+---
+
+### Scenarios that were examined and found **NOT** to be TOCTOU bugs:
+
+**Double-click on Bet/Cancel/Cash Out buttons:** `placeBet`, `cancelBet`, and `cashOut` all call `get()` which reads the synchronous-internal Zustand state, not the React-rendered snapshot. After the first click's `setPanel` (which calls `set()` synchronously), `get()` on the second click sees the updated `active`/`cashOutPending` flags and returns early. Safe.
+
+**Auto cash-out triggering multiple times within `tick:multiplier`:** The guard chain (`panel.active && !panel.cashedOut && !panel.cashOutPending`) combined with the `cashOutPending: true` flag set before the `socket.emit` prevents re-entrancy even if `tick:multiplier` fires multiple times before the server responds. Safe.
+
+**Countdown interpolation vs server-authoritative phase:** The bet button visibility is controlled by `phase` (server-authoritative), not by a client-computed countdown. No window where the UI shows a bet button after betting has closed. Safe.
+
+**Race between `cashOut()` and `bet:cashout_failed`/`bet:cashedout`:** The `cashOutPending` flag is the only mutable state. Both paths clear it correctly. No conflicting writes. Safe.
+
+**Reconnection without navigation:** Socket.io-client preserves existing event listeners across automatic reconnections. No duplicate registration from reconnect alone. Safe unless `init()` is called again.
+
+---
+
+### Summary
+
+| # | Severity | Where | What |
+|---|---|---|---|
+| 1 | **CRITICAL** | `gameStore.ts:161`, `App.tsx:40-42`, `RateControlPanel.tsx:216-218` | `init()` registers socket handlers with no cleanup; navigating between `/` and `/admin` calls it a second time, doubling every listener. Auto-bet panels emit `bet:place` twice. |
+| 2 | **MODERATE** | `BetPanel.tsx:307-315` | Auto-bet toggle guards with React-closed `phase`, but when the closure is stale due to a racing server event, the bet gets silently queued instead of placed now. |
+

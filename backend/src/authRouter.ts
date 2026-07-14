@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import crypto from "node:crypto";
-import { supabase } from "./supabaseClient.js";
+import * as store from "./store.js";
 import {
   loadAdminControls,
   saveAdminControls,
@@ -140,7 +140,34 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response) => {
         role:         "admin",
         kyc_status:   "verified",
         balance:      0,
-        currency:     "ZAR",
+        currency:     "INR",
+      },
+    });
+    return;
+  }
+
+  // Regular player login — verify credentials against the store, then issue
+  // the same token format as admin. (Host integration: replace store.verifyLogin
+  // with the site's own auth check.)
+  const profile = store.verifyLogin(email, password);
+  if (profile) {
+    const wallet = store.getWallet(profile.id);
+    const exp = Date.now() + 24 * 60 * 60 * 1000;
+    const token = signToken({ id: profile.id, email: profile.email, role: profile.role, exp });
+    res.json({
+      ok: true,
+      access_token: token,
+      refresh_token: token,
+      expires_at: Math.floor(exp / 1000),
+      user: {
+        id: profile.id,
+        email: profile.email,
+        username: profile.email.split("@")[0],
+        display_name: profile.email.split("@")[0],
+        role: profile.role,
+        kyc_status: profile.kyc_status,
+        balance: wallet ? wallet.balance : 0,
+        currency: wallet?.currency ?? "INR",
       },
     });
     return;
@@ -182,17 +209,44 @@ authRouter.post("/logout", requireAuth, async (_req: Request, res: Response) => 
 // ── GET /api/auth/me ────────────────────────────────────────────────────────
 authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
   const user = (req as AuthedRequest).user!;
+
+  // Admin is not a real DB row (see ADMIN_ID above) — keep its response
+  // hardcoded. Everyone else must reflect their real profile + wallet.
+  if (user.id === ADMIN_ID) {
+    res.json({
+      ok: true,
+      user: {
+        id:           user.id,
+        email:        user.email ?? ADMIN_EMAIL,
+        username:     "admin",
+        display_name: "Admin",
+        role:         "admin",
+        kyc_status:   "verified",
+        balance:      0,
+        currency:     "INR",
+      },
+    });
+    return;
+  }
+
+  const profile = store.getUserProfile(user.id);
+  if (!profile) {
+    res.status(404).json({ ok: false, reason: "user_not_found" });
+    return;
+  }
+  const wallet = store.getWallet(profile.id);
+
   res.json({
     ok: true,
     user: {
-      id:           user.id,
-      email:        user.email ?? "",
-      username:     "admin",
-      display_name: "Admin",
-      role:         user.role ?? "admin",
-      kyc_status:   "verified",
-      balance:      0,
-      currency:     "ZAR",
+      id:           profile.id,
+      email:        profile.email,
+      username:     profile.email.split("@")[0],
+      display_name: profile.email.split("@")[0],
+      role:         profile.role,
+      kyc_status:   profile.kyc_status,
+      balance:      wallet ? wallet.balance : 0,
+      currency:     wallet?.currency ?? "INR",
     },
   });
 });
@@ -213,6 +267,9 @@ authRouter.get(
         next_crash_point: controls.next_crash_point,
         win_mode:         controls.win_mode,
         forced_crash:     controls.forced_crash,
+        economics_enabled: controls.economy_enabled,
+        house_hold_pct:   controls.house_hold_pct,
+        max_rtp_pct:      controls.max_rtp_pct,
         updated_at:       controls.updated_at,
       },
     });
@@ -230,8 +287,11 @@ authRouter.patch(
         min_bet:          z.coerce.number().min(0.01).max(1_000_000).optional(),
         max_bet:          z.coerce.number().min(1).max(10_000_000).optional(),
         next_crash_point: z.coerce.number().min(1.00).max(130).nullable().optional(),
-        win_mode:         z.enum(["normal", "win", "loss"]).optional(),
+        win_mode:         z.enum(["normal", "win", "protect"]).optional(),
         forced_crash:     z.coerce.number().min(1.00).max(130).nullable().optional(),
+        economics_enabled: z.boolean().optional(),
+        house_hold_pct:   z.coerce.number().min(0).max(1).optional(),
+        max_rtp_pct:      z.coerce.number().min(0).max(1).optional(),
       })
       .refine(
         (d) => d.min_bet === undefined || d.max_bet === undefined || d.min_bet <= d.max_bet,
@@ -264,6 +324,8 @@ authRouter.patch(
 
     res.json({
       ok: true,
+      economyPersisted: saved.economyPersisted,
+      ...(saved.warning ? { warning: saved.warning } : {}),
       controls: {
         id:               saved.controls.id,
         min_bet:          saved.controls.min_bet,
@@ -271,9 +333,58 @@ authRouter.patch(
         next_crash_point: saved.controls.next_crash_point,
         win_mode:         saved.controls.win_mode,
         forced_crash:     saved.controls.forced_crash,
+        economics_enabled: saved.controls.economy_enabled,
+        house_hold_pct:   saved.controls.house_hold_pct,
+        max_rtp_pct:      saved.controls.max_rtp_pct,
         updated_at:       saved.controls.updated_at,
       },
     });
+  },
+);
+
+// ── GET /api/admin/reserve ──────────────────────────────────────────────────
+// The company reserve (bankroll) — starts at ₹2,00,000, drives Fair Mode's
+// Tight/Normal/Bonus selection. Separate from /admin/controls because this
+// is live financial state, not a persisted setting.
+authRouter.get(
+  "/admin/reserve",
+  adminLimiter,
+  requireAdmin,
+  async (_req: Request, res: Response) => {
+    const engine = globalThis.__gameEngine;
+    if (!engine) {
+      res.status(503).json({ ok: false, reason: "engine_not_ready" });
+      return;
+    }
+    res.json({ ok: true, reserve: engine.getBankroll() });
+  },
+);
+
+// ── PATCH /api/admin/reserve ─────────────────────────────────────────────────
+// Directly set the reserve — e.g. withdraw profit (set it lower) or top it
+// up (set it higher). Takes effect immediately; the very next round's Fair
+// Mode sub-mode selection reads the new value.
+const ReserveSchema = z.object({
+  amount: z.coerce.number().min(0).max(1_000_000_000),
+});
+
+authRouter.patch(
+  "/admin/reserve",
+  adminLimiter,
+  requireAdmin,
+  async (req: Request, res: Response) => {
+    const parse = ReserveSchema.safeParse(req.body);
+    if (!parse.success) {
+      res.status(400).json({ ok: false, reason: "validation", errors: parse.error.flatten() });
+      return;
+    }
+    const engine = globalThis.__gameEngine;
+    if (!engine) {
+      res.status(503).json({ ok: false, reason: "engine_not_ready" });
+      return;
+    }
+    engine.setBankroll(parse.data.amount);
+    res.json({ ok: true, reserve: engine.getBankroll() });
   },
 );
 
@@ -283,40 +394,6 @@ authRouter.get(
   adminLimiter,
   requireAdmin,
   async (_req: Request, res: Response) => {
-    const [usersRes, roundsRes, walletsRes] = await Promise.all([
-      supabase.from("user_profiles").select("id, role, created_at", { count: "exact" }),
-      supabase.from("rounds").select("id, crash_point, status, ended_at")
-        .order("ended_at", { ascending: false }).limit(100),
-      supabase.from("wallets").select("balance"),
-    ]);
-
-    const users = usersRes.data ?? [];
-    const rounds = roundsRes.data ?? [];
-    const wallets = walletsRes.data ?? [];
-
-    const totalBalance = wallets.reduce((s, w) => s + Number(w.balance), 0);
-    const avgCrash = rounds.length
-      ? rounds.reduce((s, r) => s + Number(r.crash_point), 0) / rounds.length
-      : 0;
-
-    res.json({
-      ok: true,
-      stats: {
-        total_users:    users.length,
-        total_balance:  Math.round(totalBalance * 100) / 100,
-        rounds_today:   rounds.filter(r => {
-          const d = new Date(r.ended_at as string);
-          const now = new Date();
-          return d.toDateString() === now.toDateString();
-        }).length,
-        avg_crash:      Math.round(avgCrash * 100) / 100,
-        recent_rounds:  rounds.slice(0, 20).map(r => ({
-          id: r.id,
-          crash_point: r.crash_point,
-          status: r.status,
-          ended_at: r.ended_at,
-        })),
-      },
-    });
+    res.json({ ok: true, stats: store.getStats() });
   }
 );

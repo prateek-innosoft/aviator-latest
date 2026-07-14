@@ -44,13 +44,17 @@ export function BetPanel({
     return s;
   };
 
+  // Fair Mode's tables assume auto cash-out never targets below 1.10x.
+  const MIN_AUTO_CASHOUT = 1.10;
+
   const commitAco = () => {
     if (acoDraft === null) return;
     const v = parseFloat(acoDraft);
     setPanel(index, {
-      autoCashOutValue: Number.isNaN(v)
-        ? panel.autoCashOutValue
-        : Math.max(1.01, Math.min(999.99, Math.round(v * 100) / 100)),
+      autoCashOutValue:
+        Number.isNaN(v) || acoDraft.trim() === ""
+          ? 1.15
+          : Math.max(MIN_AUTO_CASHOUT, Math.min(999.99, Math.round(v * 100) / 100)),
     });
     setAcoDraft(null);
   };
@@ -87,6 +91,14 @@ export function BetPanel({
   else if (panel.active && phase === "betting") action = "cancel";
   else if (panel.queued) action = "cancelQueued";
   else if (panel.cashedOut) action = "waiting";
+
+  // While the user is actively typing a new amount, reflect it on the Bet
+  // button immediately instead of waiting for blur/Enter to commit — the
+  // draft is unclamped (matches what's shown in the input itself) and only
+  // falls back to the committed amount for invalid/empty in-progress states
+  // (e.g. "", ".", "-").
+  const draftAmount = amountDraft !== null ? parseFloat(amountDraft) : NaN;
+  const displayAmount = Number.isFinite(draftAmount) && draftAmount > 0 ? draftAmount : panel.amount;
 
   // Show at least the bet amount so the button never reads R0.00 at 0.00x start.
   const potentialWin = Math.max(panel.amount, panel.amount * multiplier);
@@ -231,6 +243,7 @@ export function BetPanel({
           ref={btnRef}
           onClick={onAction}
           disabled={disabled}
+          data-testid={`bet-action-${index}`}
           className={`relative flex min-h-[66px] flex-col items-center justify-center rounded-xl border text-center font-bold leading-tight transition active:translate-y-[1px] sm:min-h-[72px] ${
             action === "cashout"
               ? "border-[#ffb24d] bg-gradient-to-b from-[#ffaf3a] to-[#f08a1c] text-black shadow-[0_4px_0_#b9670f]"
@@ -249,14 +262,14 @@ export function BetPanel({
             <>
               <span className="text-[17px] sm:text-[18px]">Cash Out</span>
               <span className="text-[15px] sm:text-[16px]">
-                {fmt(potentialWin)} ZAR
+                {fmt(potentialWin)} INR
               </span>
             </>
           ) : action === "cancel" ? (
             <>
               <span className="text-[17px] sm:text-[18px]">Cancel</span>
               <span className="text-[12px] font-medium opacity-80">
-                {fmt(panel.amount)} ZAR
+                {fmt(panel.amount)} INR
               </span>
             </>
           ) : action === "cancelQueued" ? (
@@ -284,7 +297,7 @@ export function BetPanel({
             <>
               <span className="text-[18px] sm:text-[20px]">Bet</span>
               <span className="text-[14px] sm:text-[16px]">
-                {fmt(panel.amount)} ZAR
+                {fmt(displayAmount)} INR
               </span>
             </>
           )}
@@ -342,7 +355,7 @@ export function BetPanel({
                 type="button"
                 onClick={() => {
                   setAcoDraft(null);
-                  setPanel(index, { autoCashOutValue: 2.0 });
+                  setPanel(index, { autoCashOutValue: 1.15 });
                 }}
                 disabled={!panel.autoCashOut}
                 aria-label="Reset auto cash out multiplier"

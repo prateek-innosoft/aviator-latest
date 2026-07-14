@@ -6,6 +6,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
+import { socket } from "./socket";
 
 interface SimpleSession {
   access_token: string;
@@ -145,6 +146,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     localStorage.removeItem("aviator_admin_session");
     setState({ session: null, profile: null, loading: false, error: null });
+    // Tell the server this socket is no longer authenticated, so it stops
+    // pushing the old user's real wallet balance on future round broadcasts.
+    socket.emit("auth:clear");
   }, [state.session]);
 
   const clearError = useCallback(() => {

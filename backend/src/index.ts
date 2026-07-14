@@ -6,13 +6,12 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { Server } from "socket.io";
 import { GameEngine } from "./gameEngine.js";
-import { supabase } from "./supabaseClient.js";
+import * as store from "./store.js";
 import { authRouter, requireAuth, verifyToken, type AuthedRequest } from "./authRouter.js";
 import type { CancelBetPayload, CashOutPayload, PlaceBetPayload } from "./types.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const HOST = process.env.HOST ?? "0.0.0.0";
-const STARTING_BALANCE = Number(process.env.STARTING_BALANCE ?? 1000);
 
 function lanIpv4(): string[] {
   const out: string[] = [];
@@ -68,8 +67,17 @@ const engine = new GameEngine();
 (globalThis as Record<string, unknown>).__gameEngine = engine;
 (globalThis as Record<string, unknown>).__io = io;
 
-// Demo in-memory balances for unauthenticated (demo) sockets.
-const demoBalances = new Map<string, number>();
+// Shared demo wallet — a single balance for all unauthenticated sockets,
+// backed by the in-memory store (persists for the server session). Thin
+// wrappers keep the async-looking call sites below unchanged.
+function getDemoBalance(): number {
+  return store.getDemoBalance();
+}
+
+/** Atomically adjust the shared demo wallet. Returns new balance, or null if it would drop below minBalance. */
+function adjustDemoBalance(delta: number, minBalance = 0): number | null {
+  return store.adjustDemoBalance(delta, minBalance);
+}
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", phase: engine.phase, ts: Date.now() });
@@ -83,28 +91,18 @@ app.get("/api/state", (_req, res) => {
 app.get("/api/wallet", async (req, res) => {
   await requireAuth(req, res, async () => {
     const uid = (req as AuthedRequest).user!.id;
-    const { data, error } = await supabase
-      .from("wallets")
-      .select("balance, currency")
-      .eq("user_id", uid)
-      .single();
-    if (error || !data) {
+    const wallet = store.getWallet(uid);
+    if (!wallet) {
       res.status(404).json({ ok: false, reason: "wallet_not_found" });
       return;
     }
-    res.json({ ok: true, balance: Number(data.balance), currency: data.currency });
+    res.json({ ok: true, balance: wallet.balance, currency: wallet.currency });
   });
 });
 
-/** Fetch a user's real wallet balance from Supabase. */
-async function getWalletBalance(userId: string): Promise<number | null> {
-  const { data, error } = await supabase
-    .from("wallets")
-    .select("balance")
-    .eq("user_id", userId)
-    .single();
-  if (error || !data) return null;
-  return Number(data.balance);
+/** Fetch a user's real wallet balance from the store. */
+function getWalletBalance(userId: string): number | null {
+  return store.getWalletBalance(userId);
 }
 
 // Map from socket.id → authenticated userId (for authenticated sockets).
@@ -118,42 +116,41 @@ engine.on("round:betting", (state) => broadcast("round:betting", state));
 engine.on("round:flying", (state) => broadcast("round:flying", state));
 engine.on("tick:countdown", (p) => broadcast("tick:countdown", p));
 engine.on("tick:multiplier", (p) => broadcast("tick:multiplier", p));
+engine.on("admin:roundEconomy", (p) => broadcast("admin:roundEconomy", p));
 engine.on("round:crashed", async (p) => {
   // Broadcast the crash to all clients first.
   broadcast("round:crashed", p);
-  // Sync authoritative balance to every connected socket.
+  // Sync authoritative balance to every connected socket. The demo wallet
+  // is shared across all unauthenticated sockets, so fetch it once.
+  const sharedDemoBalance = await getDemoBalance();
   for (const [sid, socket] of io.sockets.sockets) {
     const userId = authedSockets.get(sid);
     if (userId) {
-      // Authenticated user — fetch real wallet balance from DB.
+      // Authenticated user — fetch real wallet balance from DB. This is an
+      // await, so the socket could re-identify as a DIFFERENT user (logout
+      // + login again) while it's in flight — re-check identity before
+      // emitting so a stale fetch for the OLD user can't land after and
+      // overwrite the new user's already-correct balance.
       const realBalance = await getWalletBalance(userId);
-      if (realBalance !== null) {
+      if (realBalance !== null && authedSockets.get(sid) === userId) {
         socket.emit("balance:sync", { balance: realBalance });
       }
     } else {
-      // Demo user — use in-memory balance.
-      const bal = demoBalances.get(sid);
-      if (bal != null) {
-        socket.emit("balance:sync", { balance: bal });
-      }
+      socket.emit("balance:sync", { balance: sharedDemoBalance });
     }
   }
 });
 
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
   let authedUserId: string | null = null;
 
-  // Demo balance is per session (per socket). Every fresh page load starts at
-  // STARTING_BALANCE so testing always begins from a clean wallet.
-  const getDemoBalance = () => demoBalances.get(socket.id) ?? STARTING_BALANCE;
-  const setDemoBalance = (v: number) => { demoBalances.set(socket.id, v); };
-
-  demoBalances.set(socket.id, STARTING_BALANCE);
-
+  // Demo balance is a single shared persistent wallet (see
+  // migration 000006_demo_wallet.sql) — it survives reconnects instead of
+  // resetting to a fresh default every time a socket connects.
   socket.emit("init", {
     state: engine.publicState(),
-    balance: getDemoBalance(),
-    currency: "ZAR",
+    balance: await getDemoBalance(),
+    currency: "INR",
     betLimits: { minBet: engine.overrides.minBet, maxBet: engine.overrides.maxBet },
   });
 
@@ -165,35 +162,46 @@ io.on("connection", (socket) => {
     if (!decoded || decoded.id !== payload.userId) return;
     authedUserId = decoded.id;
     authedSockets.set(socket.id, authedUserId);
-    // Push real wallet balance immediately.
+    // Push real wallet balance immediately. Re-check identity after the
+    // await in case a second identify (rapid re-login) landed while this
+    // fetch was in flight — don't let a stale fetch overwrite a newer one.
     const realBalance = await getWalletBalance(authedUserId);
-    if (realBalance !== null) {
+    if (realBalance !== null && authedSockets.get(socket.id) === authedUserId) {
       socket.emit("balance:sync", { balance: realBalance });
     }
+  });
+
+  // Client logged out — forget this socket's auth association so it stops
+  // receiving the old user's real wallet balance on future round:crashed
+  // broadcasts (it's back to demo mode client-side; the server needs to
+  // know that too, or a stale balance:sync would silently overwrite the
+  // demo balance the next time a round ends).
+  socket.on("auth:clear", () => {
+    authedUserId = null;
+    authedSockets.delete(socket.id);
   });
 
   socket.on("bet:place", async (payload: PlaceBetPayload) => {
     const { panel, amount, userId } = payload;
     try {
-      if (userId && engine.supabaseRoundId) {
-      // Authenticated path: use Supabase wallet RPC.
-      const { data, error } = await supabase.rpc("place_bet", {
-        p_user_id: userId,
-        p_round_id: engine.supabaseRoundId,
-        p_panel: panel,
-        p_amount: amount,
-        p_reference: socket.id,
-      });
-      if (error) {
-        socket.emit("bet:rejected", { panel, reason: "server_error" });
-        return;
-      }
-      const result = data as { ok: boolean; reason?: string; balance?: number; bet_id?: string };
+      if (userId) {
+        if (!engine.roundRecordId || engine.phase !== "betting") {
+          socket.emit("bet:rejected", { panel, reason: "round_not_ready" });
+          return;
+        }
+      // Authenticated path: atomic wallet debit via the store.
+      const result = store.placeBet(userId, engine.roundRecordId, panel, amount, socket.id);
       if (!result.ok) {
         socket.emit("bet:rejected", { panel, reason: result.reason ?? "rejected" });
         return;
       }
-      engine.placeBet(socket.id, panel, amount, userId);
+      const placed = engine.placeBet(socket.id, panel, amount, userId);
+      if (!placed) {
+        // Engine rejected (e.g. phase moved on) — roll back the debit.
+        store.cancelBet(userId, engine.roundRecordId, panel, socket.id);
+        socket.emit("bet:rejected", { panel, reason: "phase" });
+        return;
+      }
       socket.emit("bet:accepted", {
         panel,
         amount,
@@ -201,8 +209,7 @@ io.on("connection", (socket) => {
         betId: result.bet_id,
       });
     } else {
-      // Demo / unauthenticated path: in-memory balance.
-      const balance = getDemoBalance();
+      // Demo / unauthenticated path: shared persistent wallet.
       if (amount < engine.overrides.minBet) {
         socket.emit("bet:rejected", { panel, reason: "below_min", minBet: engine.overrides.minBet });
         return;
@@ -211,17 +218,20 @@ io.on("connection", (socket) => {
         socket.emit("bet:rejected", { panel, reason: "above_max", maxBet: engine.overrides.maxBet });
         return;
       }
-      if (amount > balance) {
+      // Debit first (atomic — fails cleanly if insufficient), then register
+      // with the engine; roll back the debit if that registration fails
+      // (e.g. phase moved on in the gap), mirroring the authenticated flow.
+      const debited = await adjustDemoBalance(-amount, 0);
+      if (debited === null) {
         socket.emit("bet:rejected", { panel, reason: "insufficient" });
         return;
       }
       const ok = engine.placeBet(socket.id, panel, amount);
       if (ok) {
-        const newBalance = Math.round((balance - amount) * 100) / 100;
-        setDemoBalance(newBalance);
-        socket.emit("bet:accepted", { panel, amount, balance: newBalance });
+        socket.emit("bet:accepted", { panel, amount, balance: debited });
       } else {
-        socket.emit("bet:rejected", { panel, reason: "phase" });
+        const refunded = await adjustDemoBalance(amount);
+        socket.emit("bet:rejected", { panel, reason: "phase", balance: refunded ?? debited });
       }
     }
     } catch (err) {
@@ -232,28 +242,24 @@ io.on("connection", (socket) => {
 
   socket.on("bet:cancel", async (payload: CancelBetPayload) => {
     const { panel, userId } = payload;
-    if ((userId ?? authedUserId) && engine.supabaseRoundId) {
+    if ((userId ?? authedUserId) && engine.roundRecordId) {
       const effectiveUserId = userId ?? authedUserId!;
-      const { data, error } = await supabase.rpc("cancel_bet", {
-        p_user_id: effectiveUserId,
-        p_round_id: engine.supabaseRoundId,
-        p_panel: panel,
-        p_reference: socket.id,
-      });
-      engine.cancelBet(socket.id, panel);
-      if (!error && (data as { ok: boolean }).ok) {
-        socket.emit("bet:cancelled", { panel, balance: (data as { balance?: number }).balance });
+      if (!engine.cancelBet(socket.id, panel)) {
+        socket.emit("bet:cancel_failed", { panel, reason: "not_betting" });
+        return;
+      }
+      const result = store.cancelBet(effectiveUserId, engine.roundRecordId, panel, socket.id);
+      if (result.ok) {
+        socket.emit("bet:cancelled", { panel, balance: result.balance });
       } else {
-        socket.emit("bet:cancelled", { panel });
+        socket.emit("bet:cancel_failed", { panel, reason: "server_error" });
       }
     } else {
       const bet = engine.getPlayerBet(socket.id, panel);
       const ok = engine.cancelBet(socket.id, panel);
       if (ok && bet) {
-        const balance = getDemoBalance();
-        const newBalance = Math.round((balance + bet.amount) * 100) / 100;
-        setDemoBalance(newBalance);
-        socket.emit("bet:cancelled", { panel, balance: newBalance });
+        const newBalance = await adjustDemoBalance(bet.amount);
+        socket.emit("bet:cancelled", { panel, balance: newBalance ?? undefined });
       } else if (ok) {
         socket.emit("bet:cancelled", { panel });
       }
@@ -262,100 +268,133 @@ io.on("connection", (socket) => {
 
 
   socket.on("bet:cancelWithAmount", async (payload: CancelBetPayload) => {
-    const { panel, amount, userId } = payload;
-    console.log(`[bet:cancelWithAmount] userId=${userId} panel=${panel} roundId=${engine.supabaseRoundId} phase=${engine.phase}`);
+    const { panel, userId } = payload;
 
-    if (userId && engine.supabaseRoundId) {
-      // Authenticated path: use Supabase wallet RPC.
-      const { data, error } = await supabase.rpc("cancel_bet", {
-        p_user_id: userId,
-        p_round_id: engine.supabaseRoundId,
-        p_panel: panel,
-        p_reference: socket.id,
-      });
-      console.log(`[bet:cancelWithAmount] RPC result:`, JSON.stringify(data), `error:`, error?.message);
-      if (error) {
-        socket.emit("bet:cancel_failed", { panel, reason: "server_error" });
+    if (userId && engine.roundRecordId) {
+      // Remove from the engine FIRST (cheap, synchronous, no money moved) —
+      // only refund via the store if the engine actually had this bet.
+      // Doing this in the other order let a bet get refunded by the store
+      // while engine.cancelBet() then failed (phase already flying) and
+      // silently left the bet sitting in engine.playerBets — refunded in
+      // the wallet, yet still exposed to the round's economics as if live.
+      if (!engine.cancelBet(socket.id, panel)) {
+        socket.emit("bet:cancel_failed", { panel, reason: "not_betting" });
         return;
       }
-      const result = data as { ok: boolean; reason?: string; balance?: number };
+      const result = store.cancelBet(userId, engine.roundRecordId, panel, socket.id);
       if (!result.ok) {
-        socket.emit("bet:cancel_failed", { panel, reason: result.reason ?? "rejected" });
+        socket.emit("bet:cancel_failed", { panel, reason: result.reason ?? "server_error" });
         return;
       }
-      engine.cancelBet(socket.id, panel);
       socket.emit("bet:cancelled", { panel, balance: result.balance });
     } else {
-      // Demo path — cancel in engine (betting phase) or just clear state (queued).
+      // Demo path — refund only when engine actually removed the bet.
+      const bet = engine.getPlayerBet(socket.id, panel);
       const ok = engine.cancelBet(socket.id, panel);
-      // Even if engine returns false (was queued, not in betting phase), refund the amount.
-      const balance = getDemoBalance();
-      const newBalance = Math.round((balance + amount) * 100) / 100;
-      setDemoBalance(newBalance);
-      socket.emit("bet:cancelled", { panel, balance: newBalance });
-      void ok;
+      if (!ok) {
+        socket.emit("bet:cancel_failed", { panel, reason: "not_betting" });
+        return;
+      }
+      const refund = bet?.amount ?? 0;
+      const newBalance = refund > 0 ? await adjustDemoBalance(refund) : await getDemoBalance();
+      socket.emit("bet:cancelled", { panel, balance: newBalance ?? undefined });
     }
   });
 
   socket.on("bet:cashout", async (payload: CashOutPayload) => {
     const { panel, userId } = payload;
 
-    if (userId && engine.supabaseRoundId) {
-      // Snapshot the round ID and multiplier BEFORE the async RPC, then
-      // immediately lock the bet in the engine so it cannot also be resolved
-      // as a loss if the round crashes while we await Supabase.
-      const snapshotMultiplier = engine.multiplier;
-      const snapshotRoundId    = engine.supabaseRoundId;
-      const locked = engine.cashOut(socket.id, panel);
-      if (!locked) return; // bet already cashed out, not active, or wrong phase
+    if (userId && engine.roundRecordId) {
+      const snapshotRoundId    = engine.roundRecordId;
+      const bet = engine.getPlayerBet(socket.id, panel);
+      const prospectiveWin = bet
+        ? Math.floor(bet.amount * engine.getLiveMultiplier() * 100) / 100
+        : 0;
 
-      const { data, error } = await supabase.rpc("cashout_bet", {
-        p_user_id: userId,
-        p_round_id: snapshotRoundId,
-        p_panel: panel,
-        p_multiplier: snapshotMultiplier,
-        p_reference: socket.id,
-      });
-      if (error) {
-        console.error("[bet:cashout] RPC error:", error.message);
+      if (engine.wouldExceedBudget(prospectiveWin)) {
+        engine.forceCrashNow();
+        socket.emit("bet:cashout_failed", { panel, reason: "budget_exhausted" });
         return;
       }
-      const result = data as {
-        ok: boolean;
-        reason?: string;
-        balance?: number;
-        win?: number;
-        multiplier?: number;
-        bet_id?: string;
-      };
-      if (!result.ok) return;
+
+      const locked = engine.cashOut(socket.id, panel);
+      if (!locked) {
+        // Only force-crash if this rejection is actually a budget race (the
+        // pre-check above passed but another cashout consumed the budget in
+        // the meantime) — re-check rather than crashing unconditionally.
+        // Crashing the round for everyone on a harmless duplicate/rejected
+        // cashout (e.g. a double-click, or a bet that was already cashed
+        // out) would punish every other player for one client's no-op.
+        if (engine.phase === "flying" && engine.economyActiveForRound && engine.wouldExceedBudget(prospectiveWin)) {
+          engine.forceCrashNow();
+        }
+        socket.emit("bet:cashout_failed", { panel, reason: "rejected" });
+        return;
+      }
+
+      const result = store.cashoutBet(userId, snapshotRoundId, panel, locked.cashedOutAt!, socket.id);
+
+      if (!result.ok) {
+        engine.undoCashOut(socket.id, panel);
+        if (result.reason === "budget_exhausted") {
+          engine.forceCrashNow();
+        }
+        socket.emit("bet:cashout_failed", {
+          panel,
+          reason: result.reason ?? "rejected",
+        });
+        return;
+      }
+
+      const win = result.win ?? locked.win ?? 0;
+      if (locked.win != null && win !== locked.win) {
+        engine.recordPaidOut(win - locked.win);
+      }
 
       socket.emit("bet:cashedout", {
         panel,
-        multiplier: result.multiplier ?? snapshotMultiplier,
-        win: result.win ?? locked.win,
+        multiplier: result.multiplier ?? locked.cashedOutAt,
+        win,
         balance: result.balance,
         betId: result.bet_id,
       });
     } else {
-      // Demo path.
+      const bet = engine.getPlayerBet(socket.id, panel);
+      const prospectiveWin = bet
+        ? Math.floor(bet.amount * engine.getLiveMultiplier() * 100) / 100
+        : 0;
+
+      if (engine.wouldExceedBudget(prospectiveWin)) {
+        engine.forceCrashNow();
+        socket.emit("bet:cashout_failed", { panel, reason: "budget_exhausted" });
+        return;
+      }
+
       const result = engine.cashOut(socket.id, panel);
       if (result && result.win != null) {
-        const balance = getDemoBalance();
-        const newBalance = Math.round((balance + result.win) * 100) / 100;
-        setDemoBalance(newBalance);
+        // cashOut() already records the payout internally now that demo
+        // bets count toward the real economy — don't double-count here.
+        const newBalance = await adjustDemoBalance(result.win);
         socket.emit("bet:cashedout", {
           panel,
           multiplier: result.cashedOutAt,
           win: result.win,
-          balance: newBalance,
+          balance: newBalance ?? undefined,
         });
+      } else {
+        // Same reasoning as the authenticated branch above — only crash the
+        // round if this rejection is genuinely a budget race, not any
+        // rejected cashout (e.g. a harmless duplicate click).
+        if (engine.phase === "flying" && engine.economyActiveForRound && engine.wouldExceedBudget(prospectiveWin)) {
+          engine.forceCrashNow();
+        }
+        socket.emit("bet:cashout_failed", { panel, reason: "rejected" });
       }
     }
   });
 
   socket.on("disconnect", () => {
-    demoBalances.delete(socket.id);
+    // Demo wallet is shared/persistent now — nothing to clean up per-socket.
     authedSockets.delete(socket.id);
   });
 });

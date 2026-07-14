@@ -17,7 +17,7 @@ create table if not exists users (
 
 create table if not exists wallets (
   user_id uuid primary key references users(id) on delete cascade,
-  currency text default 'ZAR',
+  currency text default 'INR',
   balance numeric(19,2) default 0 not null,
   version int default 1 not null,
   updated_at timestamptz default now()
@@ -149,7 +149,7 @@ create policy "Admins can manage all cashouts" on cashouts
 create policy "Admins can manage all limits" on user_limits
   for all using ((select role from users where id = auth.uid()) = 'admin');
 
-insert into config (key, value) values ('bet_limits', '{"min_bet":1,"max_bet":10000,"currency":"ZAR"}'::jsonb)
+insert into config (key, value) values ('bet_limits', '{"min_bet":1,"max_bet":10000,"currency":"INR"}'::jsonb)
 on conflict (key) do update set value = excluded.value;
 
 insert into config (key, value) values ('game', '{"starting_balance":50000,"house_edge":0.01,"max_multiplier":1000}'::jsonb)

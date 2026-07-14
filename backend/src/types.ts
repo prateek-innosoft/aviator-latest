@@ -20,8 +20,8 @@ export interface LiveBet {
 export interface PublicRoundState {
   phase: GamePhase;
   roundId: string;
-  /** UUID from the Supabase `rounds` table — used for RPC calls. */
-  supabaseRoundId?: string;
+  /** Store round-record id — gates authenticated wallet operations for the round. */
+  roundRecordId?: string;
   /** Current multiplier during flying phase. */
   multiplier: number;
   /** ms remaining in betting countdown. */
@@ -37,19 +37,19 @@ export interface PublicRoundState {
 export interface PlaceBetPayload {
   panel: 0 | 1;
   amount: number;
-  /** Supabase auth user UUID — required for wallet operations. */
+  /** Authenticated user id — required for wallet operations. */
   userId?: string;
 }
 
 export interface CancelBetPayload {
   panel: 0 | 1;
   amount: number;
-  /** Supabase auth user UUID — required for wallet operations. */
+  /** Authenticated user id — required for wallet operations. */
   userId?: string;
 }
 
 export interface CashOutPayload {
   panel: 0 | 1;
-  /** Supabase auth user UUID — required for wallet operations. */
+  /** Authenticated user id — required for wallet operations. */
   userId?: string;
 }

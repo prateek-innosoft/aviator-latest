@@ -61,24 +61,28 @@ function defaultPanel(amount: number): PanelState {
     win: null,
     autoBet: false,
     autoCashOut: false,
-    autoCashOutValue: 2.0,
+    autoCashOutValue: 1.15,
     cashOutPending: false,
     betIsAuthenticated: false,
   };
 }
 
+// Module-level (not per-store-instance) so it survives even if create<>()
+// were ever called more than once — see the comment in init() below.
+let initialized = false;
+
 export const useGame = create<GameState>((set, get) => ({
   connected: false,
   phase: "betting",
   roundId: "",
-  multiplier: 0.0,
+  multiplier: 1.0,
   countdown: 5000,
   history: [],
   bets: [],
   totalBets: 0,
   totalWin: 0,
-  balance: 1000,
-  currency: "ZAR",
+  balance: 50000, // placeholder until "init" echoes the real (persistent) server balance
+  currency: "INR",
   crashFlash: null,
   flyingStartedAt: null,
   panels: [defaultPanel(2), defaultPanel(2)],
@@ -102,11 +106,11 @@ export const useGame = create<GameState>((set, get) => ({
     const p = s.panels[panel];
     if (p.active || p.queued) return;
     if (p.amount < s.betLimits.minBet) {
-      set({ betErrorToast: { msg: `Minimum bet is ${s.betLimits.minBet} ZAR`, at: Date.now() } });
+      set({ betErrorToast: { msg: `Minimum bet is ${s.betLimits.minBet} INR`, at: Date.now() } });
       return;
     }
     if (p.amount > s.betLimits.maxBet) {
-      set({ betErrorToast: { msg: `Maximum bet is ${s.betLimits.maxBet} ZAR`, at: Date.now() } });
+      set({ betErrorToast: { msg: `Maximum bet is ${s.betLimits.maxBet} INR`, at: Date.now() } });
       return;
     }
     if (p.amount > s.balance) return;
@@ -159,6 +163,17 @@ export const useGame = create<GameState>((set, get) => ({
   },
 
   init: () => {
+    // React StrictMode (dev only) intentionally mounts effects twice without
+    // waiting for cleanup, and this effect never returns one — so without
+    // this guard every socket.on() below gets registered twice on the
+    // shared `socket` singleton. That means every event fires its handler
+    // twice: two bet:place emits per auto-bet round, the engine's duplicate
+    // check silently cancel-refunds the first (already-accepted) bet, and
+    // the stale balance never corrects — the multiplier can clear the
+    // target with nothing left to actually cash out. Real bug, not just a
+    // dev nuisance: guard so init() only ever wires listeners once.
+    if (initialized) return;
+    initialized = true;
     socket.on("connect", () => set({ connected: true }));
     socket.on("disconnect", () => set({ connected: false }));
 
@@ -166,6 +181,12 @@ export const useGame = create<GameState>((set, get) => ({
       "init",
       (data: { state: PublicRoundState; balance: number; currency: string; betLimits?: { minBet: number; maxBet: number } }) => {
         const st = data.state;
+        // "init" always carries the shared DEMO balance — the server doesn't
+        // yet know this socket is authenticated at connection time. If we're
+        // already logged in (e.g. reconnecting after a brief drop), applying
+        // it would flash the wrong number before the real one lands a moment
+        // later via "balance:sync" (from the auth:identify round-trip).
+        const alreadyAuthed = get().userId != null;
         set({
           phase: st.phase,
           roundId: st.roundId,
@@ -175,7 +196,7 @@ export const useGame = create<GameState>((set, get) => ({
           bets: st.bets,
           totalBets: st.totalBets,
           totalWin: st.totalWin,
-          balance: data.balance,
+          ...(alreadyAuthed ? {} : { balance: data.balance }),
           currency: data.currency,
           flyingStartedAt: st.phase === "flying" ? Date.now() : null,
           ...(data.betLimits ? { betLimits: data.betLimits } : {}),
@@ -215,7 +236,7 @@ export const useGame = create<GameState>((set, get) => ({
         return {
           phase: "betting",
           roundId: st.roundId,
-          multiplier: 0.0,
+          multiplier: 1.0,
           countdown: st.countdown,
           bets: st.bets,
           totalBets: st.totalBets,
@@ -239,7 +260,11 @@ export const useGame = create<GameState>((set, get) => ({
         if (wasQueued) {
           socket.emit("bet:place", { panel: i, amount: p.amount, ...(isAuth ? { userId } : {}) });
           s.setPanel(i as 0 | 1, { active: true, queued: false, betIsAuthenticated: isAuth });
-        } else if (prev[i].autoBet && p.amount <= s.balance) {
+        } else if (prev[i].autoBet && p.mode === "auto" && p.amount <= s.balance) {
+          // Auto Cash Out only ever fires while mode === "auto" (see tick:multiplier
+          // below) — Auto Bet must require the same, or switching to the "Bet" tab
+          // leaves auto-bet silently placing bets every round with no way to ever
+          // auto-cash-out, draining the balance with no recourse.
           get().placeBet(i as 0 | 1);
         }
       });
@@ -252,7 +277,7 @@ export const useGame = create<GameState>((set, get) => ({
     socket.on("round:flying", (st: PublicRoundState) => {
       set({
         phase: "flying",
-        multiplier: 0.0,
+        multiplier: 1.0,
         flyingStartedAt: Date.now(),
         bets: st.bets,
         totalBets: st.totalBets,
@@ -336,13 +361,14 @@ export const useGame = create<GameState>((set, get) => ({
       if (p.reason && silentReasons.includes(p.reason)) return;
       // Show user-friendly toast for actionable rejections only.
       const reasonMessages: Record<string, string> = {
-        below_min: p.minBet ? `Minimum bet is ${p.minBet} ZAR` : "Bet amount is too low",
-        above_max: p.maxBet ? `Maximum bet is ${p.maxBet} ZAR` : "Bet amount is too high",
+        below_min: p.minBet ? `Minimum bet is ${p.minBet} INR` : "Bet amount is too low",
+        above_max: p.maxBet ? `Maximum bet is ${p.maxBet} INR` : "Bet amount is too high",
         insufficient: "Insufficient balance",
         server_error: "Server error — please try again",
         invalid_amount: "Invalid bet amount",
         no_wallet: "No wallet found — please log in",
         rejected: "Bet rejected",
+        round_not_ready: "Round isn't ready yet — please try again",
       };
       const msg = p.reason ? (reasonMessages[p.reason] ?? p.reason) : "Bet rejected";
       set({ betErrorToast: { msg, at: Date.now() } });
@@ -390,5 +416,19 @@ export const useGame = create<GameState>((set, get) => ({
         });
       },
     );
+
+    socket.on("bet:cashout_failed", (p: { panel: 0 | 1; reason?: string }) => {
+      // active stays true here on purpose — the bet may still be live (e.g.
+      // a transient RPC error) and the next tick can retry. Only tell the
+      // player when the round is genuinely gone, so a real miss isn't
+      // silent — this was previously silent, which read exactly like "the
+      // multiplier passed my target but nothing happened."
+      get().setPanel(p.panel, { cashOutPending: false });
+      if (p.reason === "not_flying" || p.reason === "rejected") {
+        set({ betErrorToast: { msg: "Missed it — the round ended before your cash out went through", at: Date.now() } });
+      } else if (p.reason === "budget_exhausted") {
+        set({ betErrorToast: { msg: "Round capped — bet settled at the payout limit", at: Date.now() } });
+      }
+    });
   },
 }));

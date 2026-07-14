@@ -30,6 +30,7 @@
 22. [Building & Deploying](#22-building--deploying)
 23. [Known Issues & Fixes](#23-known-issues--fixes)
 24. [Glossary](#24-glossary)
+25. [Game Logic — How It Actually Works](#25-game-logic--how-it-actually-works)
 
 ---
 
@@ -39,7 +40,7 @@ An **Aviator crash game** — a multiplayer betting game where a plane flies and
 
 **Current state:**
 - Runs in **demo mode** (fake money, 50,000 ZAR starting balance) for all players
-- Admin panel at `/admin` to control win/loss mode, bet limits, crash overrides
+- Admin panel at `/admin` to control win-rate mode (Fair / Players Win), bet limits, crash overrides
 - Supabase database layer is ready for real wallets but not yet active (see Known Issues)
 - Currency: ZAR (South African Rand)
 
@@ -1382,6 +1383,132 @@ Server start:
 | Optimistic concurrency | Version-checked updates to prevent race conditions |
 | Zustand | Minimal React state manager |
 | GSAP | Animation library (plane, buttons) |
+| Round Economy | Per-round payout budget: max payout = real stake × RTP |
+| RTP | Return to Player — fraction of stakes paid back as winnings |
+| House hold | 1 − RTP — target fraction the operator keeps over time |
+| simCashoutTarget | Server-side estimate of where a player might cash out (used pre-flight only) |
+
+---
+
+## 25. Game Logic — How It Actually Works
+
+Plain timeline of one round from the player's view, then what the server does behind the scenes, then how the company makes money.
+
+---
+
+### Player timeline (one round)
+
+```
+  USER OPENS GAME
+        │
+        ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  BETTING  (~5 seconds)                                  │
+  │  • Multiplier stuck at 1.00×                            │
+  │  • User picks amount (e.g. ₹100) and clicks BET         │
+  │  • Balance goes down immediately                        │
+  │  • Can cancel bet before timer ends                     │
+  │  • Can use Auto Bet / Auto Cash Out (default 1.15×)     │
+  └─────────────────────────────────────────────────────────┘
+        │
+        ▼  timer hits 0 — betting closes
+        │
+  ┌─────────────────────────────────────────────────────────┐
+  │  FLYING  (until crash)                                  │
+  │  • Plane takes off, multiplier starts climbing          │
+  │  • 1.00× → 1.10× → 1.25× → 1.50× → …                   │
+  │  • User watches and decides when to click CASH OUT      │
+  │  • Win = bet × multiplier at that moment                │
+  │    (₹100 at 2.00× → ₹200 back to balance)               │
+  └─────────────────────────────────────────────────────────┘
+        │
+        ├── User cashed out in time ──► keeps the win ✓
+        │
+        └── User did NOT cash out ────► loses the bet ✗
+        │
+        ▼  multiplier hits crash point
+        │
+  ┌─────────────────────────────────────────────────────────┐
+  │  CRASHED  (~3 seconds)                                   │
+  │  • Plane crashes at final multiplier (e.g. 1.42×)        │
+  │  • Anyone still in the round loses their stake           │
+  │  • Result shown in history bar                          │
+  └─────────────────────────────────────────────────────────┘
+        │
+        ▼
+  NEW ROUND — back to BETTING
+```
+
+---
+
+### What the server does (same round, backend view)
+
+| When | What happens |
+|------|--------------|
+| **Round starts** | New round ID, 5s countdown, fake bot bets fill the list |
+| **User bets** | Bet stored in engine + wallet deducted (real users via DB) |
+| **Betting ends** | Server **locks all bets**, totals real stakes, **picks crash point** |
+| **Plane flies** | Multiplier updated every 50ms: `e^(0.16 × seconds)` |
+| **User cashes out** | Server checks it's valid, credits `bet × multiplier` to wallet |
+| **Crash** | Uncashed bets marked lost; round saved to history |
+| **Pause 3s** | Next round begins |
+
+The player never sees the crash point until after the round — it's chosen on the server when betting closes.
+
+---
+
+### How crash point is picked (after all bets are in)
+
+**Fair mode** (default):
+
+1. Add up all real player bets → e.g. ₹10,000 staked
+2. Set payout limit → e.g. 70% RTP = max **₹7,000** can be paid out this round
+3. Randomly pick a crash from the probability table until estimated payouts fit the limit
+4. If too many people would win, pick a lower crash or force **1.00×**
+
+| Crash range | Chance |
+|-------------|--------|
+| 1.00× – 1.20× | 55% |
+| 1.21× – 2.00× | 35% |
+| 2.01× – 5.00× | 5% |
+| 5.01× – 20.00× | 4% |
+| 20×+ | 1% |
+
+**Custom mode** (admin): every round crashes at exactly the multiplier the admin typed (e.g. 2.50×).
+
+During flight, if total cashouts would exceed the payout limit, the server **crashes the plane early** and blocks further cashouts.
+
+---
+
+### How the company makes money
+
+Simple version:
+
+```
+Money in  = all bets placed
+Money out = all cashout wins paid
+Profit    = Money in − Money out
+```
+
+- **Bet** → player's money is taken right away  
+- **Cash out in time** → player gets `bet × multiplier` back (profit if multiplier > 1×)  
+- **Don't cash out** → player gets nothing; company keeps the full bet  
+
+The engine also caps how much can be paid per round (default: only **70%** of total stakes), so over many rounds the company keeps roughly **30%** (admin-configurable via House Hold %).
+
+---
+
+### Quick reference
+
+| Term | Meaning |
+|------|---------|
+| Bet | Lock stake before flight |
+| Cash out | Exit at current multiplier, get `bet × multiplier` |
+| Crash | Round ends; uncashed bets lose everything |
+| RTP | Max % of stakes returned as wins (default 70%) |
+| House hold | What the company keeps (default 30%) |
+
+**Source files:** `gameEngine.ts` (round loop), `roundEconomy.ts` (crash + budget), `index.ts` (bet/cashout sockets).
 
 ---
 
