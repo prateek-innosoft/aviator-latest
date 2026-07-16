@@ -71,6 +71,38 @@ function defaultPanel(amount: number): PanelState {
 // were ever called more than once — see the comment in init() below.
 let initialized = false;
 
+// ── Smooth 60fps multiplier ──────────────────────────────────────────────────
+// The server only ticks the authoritative multiplier every ~50ms, which reads
+// steppy. Instead of trusting that value directly for display, we EXTRAPOLATE
+// it forward every animation frame from the most recent server tick using the
+// exact same growth curve the server uses (exp(GROWTH·t)). Each server tick
+// re-anchors us (correcting any drift), so the number stays authoritative but
+// climbs buttery-smooth at the screen's refresh rate on both the player page
+// and the admin panel (they share this store). MUST match the backend GROWTH.
+const GROWTH = 0.16;
+let rafId: number | null = null;
+let anchorMult = 1.0;      // last server-confirmed multiplier
+let anchorAt = 0;          // performance.now() when that value was received
+
+function stopMultiplierAnim() {
+  if (rafId != null && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(rafId);
+  rafId = null;
+}
+
+function startMultiplierAnim() {
+  if (typeof requestAnimationFrame === "undefined") return;
+  stopMultiplierAnim();
+  const loop = () => {
+    const s = useGame.getState();
+    if (s.phase !== "flying") { rafId = null; return; }
+    const dt = Math.max(0, (performance.now() - anchorAt) / 1000);
+    const display = Math.floor(anchorMult * Math.exp(GROWTH * dt) * 100) / 100;
+    if (display !== s.multiplier) useGame.setState({ multiplier: display });
+    rafId = requestAnimationFrame(loop);
+  };
+  rafId = requestAnimationFrame(loop);
+}
+
 export const useGame = create<GameState>((set, get) => ({
   connected: false,
   phase: "betting",
@@ -175,7 +207,7 @@ export const useGame = create<GameState>((set, get) => ({
     if (initialized) return;
     initialized = true;
     socket.on("connect", () => set({ connected: true }));
-    socket.on("disconnect", () => set({ connected: false }));
+    socket.on("disconnect", () => { stopMultiplierAnim(); set({ connected: false }); });
 
     socket.on(
       "init",
@@ -212,10 +244,17 @@ export const useGame = create<GameState>((set, get) => ({
             return { panels };
           });
         }
+        // Reconnected mid-flight — anchor and start the smooth loop.
+        if (st.phase === "flying") {
+          anchorMult = st.multiplier;
+          anchorAt = performance.now();
+          startMultiplierAnim();
+        }
       },
     );
 
     socket.on("round:betting", (st: PublicRoundState) => {
+      stopMultiplierAnim();
       // Remember which panels wanted to bet this round (queued last round or auto).
       const prev = get().panels;
       const wantsBet = prev.map((p) => p.queued || p.autoBet);
@@ -283,15 +322,31 @@ export const useGame = create<GameState>((set, get) => ({
         totalBets: st.totalBets,
         totalWin: st.totalWin,
       });
+      // Anchor the smooth-multiplier extrapolation at 1.00x and start the
+      // 60fps loop; server ticks re-anchor it as they arrive.
+      anchorMult = 1.0;
+      anchorAt = performance.now();
+      startMultiplierAnim();
     });
 
     socket.on(
       "tick:multiplier",
       (p: { multiplier: number; bets: LiveBet[]; totalWin?: number }) => {
         const totalWin = p.totalWin ?? sumBetWins(p.bets);
-        set({ multiplier: p.multiplier, bets: p.bets, totalWin });
+        // Re-anchor the smooth extrapolation to this authoritative value; the
+        // rAF loop drives the displayed `multiplier` between ticks. (While not
+        // flying — e.g. the final crash tick — set it directly as a fallback.)
+        anchorMult = p.multiplier;
+        anchorAt = performance.now();
+        if (get().phase === "flying" && rafId != null) {
+          set({ bets: p.bets, totalWin });
+        } else {
+          set({ multiplier: p.multiplier, bets: p.bets, totalWin });
+        }
 
-        // Auto cash-out handling (auto tab only, once per round).
+        // Auto cash-out handling (auto tab only, once per round). Uses the
+        // authoritative server multiplier p.multiplier, not the interpolated
+        // display, so cash-out timing stays exact.
         const s = get();
         if (s.phase !== "flying") return;
         s.panels.forEach((panel, i) => {
@@ -316,6 +371,8 @@ export const useGame = create<GameState>((set, get) => ({
         history: RoundHistoryItem[];
         balance?: number;
       }) => {
+        // Stop the smooth loop and snap to the authoritative crash value.
+        stopMultiplierAnim();
         set((s) => {
           const panels = s.panels.map((panel) => ({
             ...panel,

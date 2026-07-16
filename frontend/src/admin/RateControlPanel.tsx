@@ -57,7 +57,6 @@ export function AdminLogin({ onLogin }: { onLogin: () => void }) {
       );
       return;
     }
-    // token will be available via useAuth session — signal parent
     onLogin();
   };
 
@@ -66,7 +65,6 @@ export function AdminLogin({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#f5f6f8] px-4" data-testid="admin-login">
       <div className="w-full max-w-[360px]">
-        {/* Logo */}
         <div className="mb-8 flex flex-col items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#e8173a] shadow-lg shadow-[#e8173a]/30">
             <svg viewBox="0 0 24 24" className="h-6 w-6 fill-none stroke-white" strokeWidth="2.5">
@@ -149,9 +147,18 @@ function NumStepper({ label, value, onChange, min = 1, max = 100, step = 1, suff
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LiveTicker — live game state
+// Multiplier pill colour by value
 // ─────────────────────────────────────────────────────────────────────────────
-function LiveTicker({ liveEconomy }: { liveEconomy: AdminRoundEconomyEvent | null }) {
+const pillColor = (cp: number) =>
+  cp >= 10 ? "bg-emerald-100 text-emerald-700"
+: cp >= 3  ? "bg-sky-100 text-sky-600"
+: cp >= 2  ? "bg-gray-100 text-gray-500"
+           : "bg-red-100 text-red-500";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LiveTicker — live game state in the top bar
+// ─────────────────────────────────────────────────────────────────────────────
+function LiveTicker() {
   const phase      = useGame(s => s.phase);
   const multiplier = useGame(s => s.multiplier);
   const countdown  = useGame(s => s.countdown);
@@ -165,35 +172,15 @@ function LiveTicker({ liveEconomy }: { liveEconomy: AdminRoundEconomyEvent | nul
   const dotColor  = isFlying ? "bg-emerald-500 animate-pulse" : isCrashed ? "bg-red-500" : "bg-amber-400 animate-pulse";
   const phaseLabel = isFlying ? "LIVE" : isCrashed ? "CRASHED" : `${(countdown / 1000).toFixed(1)}s`;
 
-  const pillColor = (cp: number) =>
-    cp >= 10 ? "bg-emerald-100 text-emerald-700"
-  : cp >= 3  ? "bg-sky-100 text-sky-600"
-  : cp >= 2  ? "bg-gray-100 text-gray-500"
-             : "bg-red-100 text-red-500";
-
-  const budgetLeft = liveEconomy
-    ? Math.max(0, liveEconomy.maxPayout - liveEconomy.paidOut)
-    : 0;
-
   return (
     <div className="ml-4 flex flex-wrap items-center gap-2">
       <div className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-gray-50 px-3 py-1.5">
         <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />
         <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">{phaseLabel}</span>
-        <span className={`min-w-[3.2rem] text-right text-[17px] font-black tabular-nums leading-none ${multColor}`}>
+        <span className={`min-w-[3.2rem] text-right text-[17px] font-black tabular-nums leading-none ${multColor}`} data-testid="admin-live-multiplier">
           {isBetting ? "—" : `${multiplier.toFixed(2)}×`}
         </span>
       </div>
-
-      {liveEconomy?.economyActive && (
-        <div className="hidden items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 md:flex">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600">Budget</span>
-          <span className="text-[12px] font-bold tabular-nums text-emerald-700">
-            {adminFmt.fmt(liveEconomy.paidOut)} / {adminFmt.fmt(liveEconomy.maxPayout)}
-          </span>
-          <span className="text-[10px] text-emerald-600">({adminFmt.fmt(budgetLeft)} left)</span>
-        </div>
-      )}
 
       {history.length > 0 && (
         <div className="hidden items-center gap-1 xl:flex">
@@ -209,7 +196,68 @@ function LiveTicker({ liveEconomy }: { liveEconomy: AdminRoundEconomyEvent | nul
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main admin panel — Global Win Rate + Bet Limits only
+// RoundHistory — the current round shows IMMEDIATELY (live), finished rounds below
+// ─────────────────────────────────────────────────────────────────────────────
+function RoundHistory({ liveEconomy }: { liveEconomy: AdminRoundEconomyEvent | null }) {
+  const phase      = useGame(s => s.phase);
+  const multiplier = useGame(s => s.multiplier);
+  const countdown  = useGame(s => s.countdown);
+  const history    = useGame(s => s.history);
+
+  const liveLabel =
+    phase === "betting" ? `Betting · ${(countdown / 1000).toFixed(1)}s` :
+    phase === "flying"  ? "In flight" :
+    "Crashed";
+  const liveBadge =
+    phase === "betting" ? "bg-amber-100 text-amber-700" :
+    phase === "flying"  ? "bg-emerald-100 text-emerald-700" :
+    "bg-red-100 text-red-600";
+  const liveValue = phase === "betting" ? "—" : `${multiplier.toFixed(2)}×`;
+
+  return (
+    <section className="mb-5 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm" data-testid="round-history">
+      <div className="mb-4">
+        <h2 className="text-[15px] font-bold text-gray-900">Round History</h2>
+        <p className="text-[12px] text-gray-400">The current round appears live and updates every moment — you don't wait for it to finish.</p>
+      </div>
+
+      {/* Current round — visible immediately */}
+      <div
+        data-testid="round-history-current"
+        className="mb-4 flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3"
+      >
+        <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wide ${liveBadge}`}>
+          {liveLabel}
+        </span>
+        {liveEconomy?.fairSubMode && (
+          <span className="rounded-full bg-amber-500 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-white">
+            {liveEconomy.fairSubMode}
+          </span>
+        )}
+        <span
+          className={`ml-auto text-[22px] font-black tabular-nums leading-none ${
+            phase === "flying" ? "text-emerald-600" : phase === "crashed" ? "text-red-500" : "text-gray-400"
+          }`}
+        >
+          {liveValue}
+        </span>
+      </div>
+
+      {/* Finished rounds */}
+      <div className="flex flex-wrap gap-1.5" data-testid="round-history-list">
+        {history.length === 0 && <span className="text-[12px] text-gray-400">No finished rounds yet.</span>}
+        {history.slice(0, 40).map((r, i) => (
+          <span key={r.id ?? i} className={`rounded-md px-2 py-1 text-[11px] font-bold tabular-nums ${pillColor(r.multiplier)}`}>
+            {r.multiplier.toFixed(2)}×
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main admin panel
 // ─────────────────────────────────────────────────────────────────────────────
 export function RateControlPanel({ token }: { token: string }) {
   const { profile, logout } = useAuth();
@@ -217,15 +265,12 @@ export function RateControlPanel({ token }: { token: string }) {
 
   useEffect(() => { init(); }, [init]);
 
-  // "fair" = RTP-formula economy, "protect" = conservative disclosed table
-  // (thin-reserve mode), "custom" = admin-entered forced crash
+  // "fair" = reserve-driven tables, "protect" = fixed conservative table,
+  // "custom" = a fixed crash the admin types in.
   const [crashMode, setCrashMode]         = useState<"fair" | "protect" | "custom">("fair");
   const [customCrash, setCustomCrash]     = useState("2.00");
   const [minBet, setMinBet]               = useState("1");
   const [maxBet, setMaxBet]               = useState("50000");
-  const [economicsEnabled, setEconomicsEnabled] = useState(true);
-  const [houseHoldPct, setHouseHoldPct]   = useState("30");
-  const [maxRtpPct, setMaxRtpPct]         = useState("70");
   const [liveEconomy, setLiveEconomy]     = useState<AdminRoundEconomyEvent | null>(null);
   const [loading, setLoading]             = useState(true);
   const [saving, setSaving]               = useState(false);
@@ -244,8 +289,6 @@ export function RateControlPanel({ token }: { token: string }) {
     setLoading(true);
     try {
       const { controls } = await adminApi.getControls(token);
-      // Don't clobber values the admin has already started editing while the
-      // initial (non-forced) fetch was still in flight.
       if (force || !dirtyRef.current) {
         setMinBet(String(controls.min_bet));
         setMaxBet(String(controls.max_bet));
@@ -254,9 +297,6 @@ export function RateControlPanel({ token }: { token: string }) {
           controls.win_mode === "protect" ? "protect" : "fair",
         );
         if (controls.forced_crash != null) setCustomCrash(String(controls.forced_crash));
-        setEconomicsEnabled(controls.economics_enabled);
-        setHouseHoldPct(String(Math.round(controls.house_hold_pct * 100)));
-        setMaxRtpPct(String(Math.round(controls.max_rtp_pct * 100)));
       }
     } catch (e: unknown) {
       show(e instanceof Error ? e.message : "Load failed", false);
@@ -270,7 +310,7 @@ export function RateControlPanel({ token }: { token: string }) {
   useEffect(() => {
     adminApi.getReserve(token)
       .then(({ reserve }) => setReserveInput(String(reserve)))
-      .catch(() => { /* live ticker will still show it once a round runs */ });
+      .catch(() => { /* the live economy feed will still show it once a round runs */ });
   }, [token]);
 
   const commitReserve = useCallback(async () => {
@@ -302,16 +342,11 @@ export function RateControlPanel({ token }: { token: string }) {
     customC: string,
     minB: string,
     maxB: string,
-    econEnabled: boolean,
-    holdPct: string,
-    _rtpPct: string,
   ) => {
     const min = Number(minB);
     const max = Number(maxB);
-    const hold = Number(holdPct);
     if (!Number.isFinite(min) || !Number.isFinite(max)) return;
     if (min < 0.01 || max < 1 || min > max) return;
-    if (!Number.isFinite(hold) || hold < 1 || hold > 99) return;
 
     let forced_crash: number | null = null;
     if (mode === "custom") {
@@ -323,23 +358,15 @@ export function RateControlPanel({ token }: { token: string }) {
     setSaving(true);
     const seq = ++commitSeqRef.current;
     try {
-      const syncedRtp = Math.max(0.01, Math.min(0.99, (100 - hold) / 100));
-      const result = await adminApi.patchControls(token, {
+      await adminApi.patchControls(token, {
         win_mode: mode === "protect" ? "protect" : "normal",
         forced_crash,
         min_bet: Math.round(min * 100) / 100,
         max_bet: Math.round(max * 100) / 100,
-        economics_enabled: econEnabled,
-        house_hold_pct: Math.round(hold) / 100,
-        max_rtp_pct: syncedRtp,
       });
       if (seq !== commitSeqRef.current) return;
-      if (result.warning) {
-        show(result.warning, false);
-      } else {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 1200);
-      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1200);
     } catch (e: unknown) {
       if (seq === commitSeqRef.current) {
         show(e instanceof Error ? e.message : "Save failed", false);
@@ -354,9 +381,6 @@ export function RateControlPanel({ token }: { token: string }) {
     customC: string,
     minB: string,
     maxB: string,
-    econEnabled = economicsEnabled,
-    holdPct = houseHoldPct,
-    rtpPct = maxRtpPct,
   ) => {
     dirtyRef.current = true;
     const min = Number(minB);
@@ -364,23 +388,13 @@ export function RateControlPanel({ token }: { token: string }) {
     if (!Number.isFinite(min) || !Number.isFinite(max)) return;
     if (min < 0.01 || max < 1 || min > max) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(
-      () => commit(mode, customC, minB, maxB, econEnabled, holdPct, rtpPct),
-      600,
-    );
+    debounceRef.current = setTimeout(() => commit(mode, customC, minB, maxB), 600);
   };
 
   const handleMode        = (m: "fair" | "protect" | "custom") => { setCrashMode(m); schedule(m, customCrash, minBet, maxBet); };
   const handleCustomCrash = (v: string) => { setCustomCrash(v); schedule("custom", v, minBet, maxBet); };
   const handleMinBet = (v: string) => { setMinBet(v);  schedule(crashMode, customCrash, v, maxBet); };
   const handleMaxBet = (v: string) => { setMaxBet(v);  schedule(crashMode, customCrash, minBet, v); };
-  const handleEconToggle = (v: boolean) => { setEconomicsEnabled(v); schedule(crashMode, customCrash, minBet, maxBet, v); };
-  const handleHoldPct = (v: string) => {
-    setHouseHoldPct(v);
-    const holdNum = Number(v);
-    if (Number.isFinite(holdNum)) setMaxRtpPct(String(Math.max(1, Math.min(99, 100 - holdNum))));
-    schedule(crashMode, customCrash, minBet, maxBet, economicsEnabled, v);
-  };
 
   return (
     <div className="flex min-h-screen flex-col bg-[#f5f6f8] text-gray-900">
@@ -397,7 +411,7 @@ export function RateControlPanel({ token }: { token: string }) {
           <span className="rounded-md bg-[#e8173a]/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-[#e8173a]">Admin</span>
         </div>
 
-        <LiveTicker liveEconomy={liveEconomy} />
+        <LiveTicker />
 
         <div className="ml-auto flex items-center gap-2">
           <div className={`flex items-center gap-1 text-[11px] transition-opacity duration-200 ${saving || saved ? "opacity-100" : "opacity-0"}`}>
@@ -431,11 +445,11 @@ export function RateControlPanel({ token }: { token: string }) {
           <p className="text-[13px] text-gray-400">Settings apply to every player worldwide, starting next round.</p>
         </div>
 
-        {/* Global Win Rate card */}
+        {/* Game Mode card */}
         <section className="mb-5 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
           <div className="mb-4">
-            <h2 className="text-[15px] font-bold text-gray-900">Global Win Rate</h2>
-            <p className="text-[12px] text-gray-400">Controls the multiplier range for every round.</p>
+            <h2 className="text-[15px] font-bold text-gray-900">Game Mode</h2>
+            <p className="text-[12px] text-gray-400">Controls the crash-multiplier distribution for every round. (When nobody has bet, the round always flies an exciting lure round regardless of mode.)</p>
           </div>
 
           {/* 3-position selector */}
@@ -458,7 +472,7 @@ export function RateControlPanel({ token }: { token: string }) {
               </div>
               <div className="text-center">
                 <div className={`text-[14px] font-black ${crashMode === "fair" ? "text-amber-600" : "text-gray-400"}`}>Fair</div>
-                <div className="mt-0.5 text-[11px] text-gray-400">Weighted table 1×–20×+</div>
+                <div className="mt-0.5 text-[11px] text-gray-400">Reserve-driven tables</div>
               </div>
             </button>
 
@@ -524,101 +538,61 @@ export function RateControlPanel({ token }: { token: string }) {
 
           <div className="mt-4 rounded-xl bg-gray-50 px-4 py-3 text-[12px] leading-relaxed text-gray-500">
             {crashMode === "custom"
-              ? `Every round crashes at exactly ${Number(customCrash || 0).toFixed(2)}× (1×–130×). Whatever you enter here is used as the crash point.`
+              ? `Every round (with real bets) crashes at exactly ${Number(customCrash || 0).toFixed(2)}× (1×–130×).`
               : crashMode === "protect"
-              ? "Protect Mode — a disclosed, conservative weighted table for thin-reserve periods: 70% of rounds crash 1.00×–1.30×, 28% crash 1.30×–2.00×, 2% crash 2.00×–2.50×. Still a genuine random draw with no knowledge of bet amounts — just a smaller, uniform payout ceiling than Fair mode."
-              : "Controlled economy — crash = RTP ÷ (1 − r), mathematically guaranteeing the target return; a generous safety ceiling backstops implausible payout pile-ups."}
+              ? "Protect Mode — a fixed, conservative table for thin-reserve periods: 72% of rounds crash 1.00×–1.30×, 28% crash 1.30×–2.00×. A genuine random draw with no knowledge of bet amounts."
+              : "Fair Mode — the crash table is picked by the company reserve below: Tight (reserve < ₹3L), Normal (₹3L–₹7L), or a 70/30 Normal/Bonus mix (reserve ≥ ₹7L). Uniform for every player, never based on bet amounts."}
           </div>
         </section>
 
-        {/* Round Economy */}
-        <section className="mb-5 rounded-2xl border border-emerald-200 bg-white p-6 shadow-sm" data-testid="round-economy">
-          <div className="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-[15px] font-bold text-gray-900">Round Economy</h2>
-              <p className="text-[12px] text-gray-400">
-                Fair mode picks Tight / Normal / Bonus from the current reserve alone — never from bet amounts — before every round.
-              </p>
-            </div>
-            <label className="flex items-center gap-2 text-[12px] font-semibold text-gray-600">
-              <input
-                type="checkbox"
-                checked={economicsEnabled}
-                onChange={(e) => handleEconToggle(e.target.checked)}
-                className="h-4 w-4 rounded border-gray-300"
-              />
-              Enabled
-            </label>
+        {/* Company Reserve card */}
+        <section className="mb-5 rounded-2xl border border-emerald-200 bg-white p-6 shadow-sm" data-testid="company-reserve">
+          <div className="mb-4">
+            <h2 className="text-[15px] font-bold text-gray-900">Company Reserve</h2>
+            <p className="text-[12px] text-gray-400">
+              A real running ledger — it grows when players lose and shrinks when they win (stake collected − paid out, every round). It also drives which Fair table is active.
+            </p>
           </div>
 
-          {crashMode === "fair" && liveEconomy?.fairSubMode && (
-            <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-600">Active sub-mode</span>
-              <span className="rounded-full bg-amber-500 px-2.5 py-0.5 text-[11px] font-black uppercase tracking-wide text-white">
-                {liveEconomy.fairSubMode}
+          {liveEconomy && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-600">Live reserve</span>
+              <span className="text-[16px] font-black tabular-nums text-emerald-700" data-testid="live-reserve">
+                ₹{adminFmt.fmt(liveEconomy.reserve)}
               </span>
-              <span className="ml-auto text-[12px] font-bold tabular-nums text-amber-700">
-                Reserve: {adminFmt.fmt(liveEconomy.reserve)}
-              </span>
+              {crashMode === "fair" && liveEconomy.fairSubMode && (
+                <span className="ml-auto rounded-full bg-amber-500 px-2.5 py-0.5 text-[11px] font-black uppercase tracking-wide text-white">
+                  {liveEconomy.fairSubMode} mode
+                </span>
+              )}
             </div>
           )}
 
-          <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-3">
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-              Reserve (starts at ₹2,00,000 — withdraw profit by setting it lower, top it up by setting it higher)
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={0}
-                value={reserveInput}
-                onChange={(e) => setReserveInput(e.target.value)}
-                data-testid="reserve-input"
-                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[15px] font-bold text-gray-900 outline-none tabular-nums focus:border-gray-400"
-              />
-              <button
-                onClick={commitReserve}
-                disabled={reserveSaving}
-                data-testid="reserve-set"
-                className="shrink-0 rounded-lg bg-gray-900 px-4 py-2 text-[12px] font-bold text-white transition hover:bg-gray-700 disabled:opacity-50"
-              >
-                {reserveSaving ? "Setting…" : "Set"}
-              </button>
-            </div>
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            Set reserve (withdraw profit by setting it lower, top it up by setting it higher)
           </div>
-
-          <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3">
-            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Round stake</div>
-              <div className="text-[18px] font-black tabular-nums text-gray-900">
-                {adminFmt.fmt(liveEconomy?.realStake ?? 0)}
-              </div>
-            </div>
-            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Payout budget</div>
-              <div className="text-[18px] font-black tabular-nums text-emerald-700">
-                {adminFmt.fmt(liveEconomy?.maxPayout ?? 0)}
-              </div>
-            </div>
-            <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Paid out</div>
-              <div className="text-[18px] font-black tabular-nums text-gray-900">
-                {adminFmt.fmt(liveEconomy?.paidOut ?? 0)}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <NumStepper testId="hold" label="House hold %" value={houseHoldPct} onChange={handleHoldPct} min={1} max={99} step={1} suffix="%" />
-            <NumStepper testId="rtp" label="Max RTP %" value={maxRtpPct} onChange={() => {}} min={1} max={99} step={1} suffix="%" />
-          </div>
-
-          <div className="mt-4 rounded-xl bg-emerald-50 px-4 py-3 text-[11px] leading-relaxed text-emerald-800">
-            Fair mode's crash point comes from the Tight / Normal / Bonus tables (picked by
-            reserve level above), not this RTP % directly — House Hold / Max RTP here size the
-            payout budget and safety-ceiling circuit breaker underneath it, same as Protect mode.
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              value={reserveInput}
+              onChange={(e) => setReserveInput(e.target.value)}
+              data-testid="reserve-input"
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[15px] font-bold text-gray-900 outline-none tabular-nums focus:border-gray-400"
+            />
+            <button
+              onClick={commitReserve}
+              disabled={reserveSaving}
+              data-testid="reserve-set"
+              className="shrink-0 rounded-lg bg-gray-900 px-4 py-2 text-[12px] font-bold text-white transition hover:bg-gray-700 disabled:opacity-50"
+            >
+              {reserveSaving ? "Setting…" : "Set"}
+            </button>
           </div>
         </section>
+
+        {/* Round History card — current round is visible immediately */}
+        <RoundHistory liveEconomy={liveEconomy} />
 
         {/* Bet Limits card */}
         <section className="mb-5 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -636,10 +610,10 @@ export function RateControlPanel({ token }: { token: string }) {
         <section className="rounded-2xl border border-blue-100 bg-blue-50 p-6">
           <h2 className="mb-3 text-[13px] font-bold uppercase tracking-wider text-blue-500">How it works</h2>
           <div className="space-y-2 text-[12px] leading-relaxed text-blue-700">
-            <p><span className="font-semibold">Round Economy</span> locks all real bets before flight, then Fair mode picks a crash table by current reserve — never by bet amounts — so every player in a round faces the same disclosed odds.</p>
-            <p><span className="font-semibold">Global Win Rate</span> — Fair auto-selects Tight (reserve &lt; ₹3L), Normal (₹3L–₹7L), or a 70/30 Normal/Bonus mix (reserve ≥ ₹7L); Protect uses a fixed conservative table (70% 1.00×–1.30×, 28% 1.30×–2.00×, 2% 2.00×–2.50×) for thin-reserve periods; Custom forces every round to the exact multiplier you enter.</p>
+            <p><span className="font-semibold">Modes</span> — with no bets a round flies a wide "lure" table; with real bets it uses Fair (reserve-driven tables), Protect (fixed 72/28 conservative table), or Custom (your exact crash). No round can ever pay out more than the reserve plus that round's own stake.</p>
+            <p><span className="font-semibold">Company Reserve</span> is a real ledger — losses grow it, wins shrink it — and it selects the Fair sub-mode (Tight / Normal / Bonus). Set it manually to withdraw or top up.</p>
             <p><span className="font-semibold">Bet Limits</span> apply to all players — bets outside this range are rejected.</p>
-            <p className="border-t border-blue-200 pt-2 text-blue-600">Changes save automatically and take effect on the next round. The live multiplier and recent crash history are shown in the top bar.</p>
+            <p className="border-t border-blue-200 pt-2 text-blue-600">Changes save automatically and take effect on the next round. The live multiplier and current round show in the top bar and Round History above.</p>
           </div>
         </section>
       </main>

@@ -78,29 +78,28 @@ assert(e.placeBet("sock-2", 0, 10) === false, "bet rejected during flight");
   assert(instant === null, "cashout at the exact instant flight starts on a 1.00x-crash round is rejected, not paid at break-even");
 }
 
-// ── Protect Mode: admin override picks the conservative tier table,
-//    independent of the normal RTP formula, whenever there's real stake. ──
+// ── Protect Mode: two-tier conservative table (72% 1.00-1.30, 28% 1.30-2.00)
+//    whenever there's real stake — nothing above 2.00x. ──
 {
   const e4 = new GameEngine();
   e4.overrides.winMode = "protect";
   let allInRange = true;
-  let sawSubHardCeiling = false;
+  let sawEconomyActive = false;
   for (let i = 0; i < 200; i++) {
     (e4 as any).phase = "betting";
     (e4 as any).playerBets = [];
     e4.placeBet(`sock-protect-${i}`, 0, 100);
     (e4 as any).lockRoundAndSelectCrash();
     const cp = (e4 as any).crashPoint as number;
-    if (cp < 1.0 || cp > 2.5) allInRange = false;
-    if ((e4 as any).economyActiveForRound === true) sawSubHardCeiling = true;
+    if (cp < 1.0 || cp > 2.0) allInRange = false;
+    if ((e4 as any).economyActiveForRound === true) sawEconomyActive = true;
   }
-  assert(allInRange, "protect mode: 200 rounds with real stake all crash within [1.00, 2.50]");
-  assert(sawSubHardCeiling, "protect mode: economyActiveForRound is true when real stake exists");
+  assert(allInRange, "protect mode: 200 rounds with real stake all crash within [1.00, 2.00]");
+  assert(sawEconomyActive, "protect mode: economyActiveForRound is true when real stake exists");
 }
 {
-  // Protect mode must not override the no-real-stake lure branch — with
-  // nobody betting, it should still fly the enticing lure table, not force
-  // a 1.00-2.50x ceiling on a round nobody has money in.
+  // Lure takes precedence over every admin mode: with nobody betting, even
+  // Protect mode flies the enticing lure table, not the protect ceiling.
   const e5 = new GameEngine();
   e5.overrides.winMode = "protect";
   (e5 as any).phase = "betting";
@@ -108,7 +107,30 @@ assert(e.placeBet("sock-2", 0, 10) === false, "bet rejected during flight");
   (e5 as any).lockRoundAndSelectCrash();
   assert(
     (e5 as any).economyActiveForRound === false,
-    "protect mode: a round with zero real stake still falls through to lure mode, not the protect ceiling",
+    "no-stake round falls through to lure mode regardless of admin mode",
+  );
+}
+{
+  // Custom mode also defers to lure when nobody has bet (lure-first precedence).
+  const eCustomNoBet = new GameEngine();
+  eCustomNoBet.overrides.forcedCrash = 2.0;
+  (eCustomNoBet as any).phase = "betting";
+  (eCustomNoBet as any).playerBets = [];
+  (eCustomNoBet as any).lockRoundAndSelectCrash();
+  assert(
+    (eCustomNoBet as any).economyActiveForRound === false,
+    "custom mode with no bets flies lure (lure-first precedence), not the forced crash",
+  );
+  // …but with a real bet, custom honors the exact forced crash.
+  const eCustom = new GameEngine();
+  eCustom.overrides.forcedCrash = 2.0;
+  (eCustom as any).phase = "betting";
+  (eCustom as any).playerBets = [];
+  eCustom.placeBet("sock-custom", 0, 100);
+  (eCustom as any).lockRoundAndSelectCrash();
+  assert(
+    (eCustom as any).crashPoint === 2.0 && (eCustom as any).economyActiveForRound === true,
+    `custom mode with a real bet crashes at exactly the forced value (got ${(eCustom as any).crashPoint})`,
   );
 }
 
@@ -168,23 +190,70 @@ assert(e.placeBet("sock-2", 0, 10) === false, "bet rejected during flight");
   assert(allInRange, "fair mode (tight, forced by low reserve): 300 rounds all crash within [1.00, 5.00]");
 }
 
-// ── Regression: a small first real-money round must NOT collapse the
-//    starting reserve. This previously happened because avgRealStakeEma
-//    cold-started at exactly the first round's own stake (e.g. ₹10), which
-//    fed a cap of just 10*20=₹200 — instantly clipping the real ₹2,00,000
-//    starting bankroll down to ₹200 in a single settleBankroll() call. ──
+// ── Reserve is a real ledger: after each economy-active round it moves by
+//    (stake collected − paid out). ──
 {
+  // Players lost (paidOut 0) → house keeps the whole stake → reserve up.
   const e6 = new GameEngine();
-  const startingBankroll = (e6 as any).bankroll as number; // 2,00,000
+  const start = (e6 as any).bankroll as number; // 2,00,000
   (e6 as any).economyActiveForRound = true;
-  (e6 as any).roundRealStake = 10;
-  (e6 as any).roundNominalBudget = 7; // 10 * 0.70
-  (e6 as any).roundPaidOut = 0; // nobody cashed out -> full surplus banked
+  (e6 as any).roundRealStake = 1000;
+  (e6 as any).roundPaidOut = 0;
   (e6 as any).settleBankroll();
-  const after = (e6 as any).bankroll as number;
+  assert((e6 as any).bankroll === start + 1000, `all-lose round adds full stake to reserve (got ${(e6 as any).bankroll})`);
+}
+{
+  // Mixed: staked 1000, paid 600 → net +400.
+  const e7 = new GameEngine();
+  const start = (e7 as any).bankroll as number;
+  (e7 as any).economyActiveForRound = true;
+  (e7 as any).roundRealStake = 1000;
+  (e7 as any).roundPaidOut = 600;
+  (e7 as any).settleBankroll();
+  assert((e7 as any).bankroll === start + 400, `reserve += stake − paidOut (expected ${start + 400}, got ${(e7 as any).bankroll})`);
+}
+{
+  // Big win: staked 100, paid 500 → net −400, reserve drops.
+  const e8 = new GameEngine();
+  const start = (e8 as any).bankroll as number;
+  (e8 as any).economyActiveForRound = true;
+  (e8 as any).roundRealStake = 100;
+  (e8 as any).roundPaidOut = 500;
+  (e8 as any).settleBankroll();
+  assert((e8 as any).bankroll === start - 400, `a net-loss round shrinks the reserve (expected ${start - 400}, got ${(e8 as any).bankroll})`);
+}
+{
+  // Floor: reserve can never go below 0 even if net would push it negative.
+  const e9 = new GameEngine();
+  (e9 as any).bankroll = 100;
+  (e9 as any).economyActiveForRound = true;
+  (e9 as any).roundRealStake = 50;
+  (e9 as any).roundPaidOut = 500; // net −450 → 100 − 450 < 0 → floored to 0
+  (e9 as any).settleBankroll();
+  assert((e9 as any).bankroll === 0, `reserve floors at 0 (got ${(e9 as any).bankroll})`);
+}
+{
+  // Lure rounds (no economy) never touch the reserve.
+  const e10 = new GameEngine();
+  const start = (e10 as any).bankroll as number;
+  (e10 as any).economyActiveForRound = false;
+  (e10 as any).roundRealStake = 0;
+  (e10 as any).roundPaidOut = 0;
+  (e10 as any).settleBankroll();
+  assert((e10 as any).bankroll === start, "lure (no-economy) round leaves the reserve unchanged");
+}
+
+// ── Solvency invariant: per-round payout ceiling = reserve + stake. ──
+{
+  const e11 = new GameEngine();
+  (e11 as any).bankroll = 200000;
+  (e11 as any).phase = "betting";
+  (e11 as any).playerBets = [];
+  e11.placeBet("sock-ceiling", 0, 5000);
+  (e11 as any).lockRoundAndSelectCrash();
   assert(
-    after > startingBankroll * 0.9,
-    `a single ₹10 first bet must not collapse the ₹${startingBankroll} reserve (got ${after} after settleBankroll)`,
+    (e11 as any).roundMaxPayout === 205000,
+    `roundMaxPayout = reserve + stake = 205000 (got ${(e11 as any).roundMaxPayout})`,
   );
 }
 

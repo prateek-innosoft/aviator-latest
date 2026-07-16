@@ -261,16 +261,12 @@ authRouter.get(
     res.json({
       ok: true,
       controls: {
-        id:               controls.id,
-        min_bet:          controls.min_bet,
-        max_bet:          controls.max_bet,
-        next_crash_point: controls.next_crash_point,
-        win_mode:         controls.win_mode,
-        forced_crash:     controls.forced_crash,
-        economics_enabled: controls.economy_enabled,
-        house_hold_pct:   controls.house_hold_pct,
-        max_rtp_pct:      controls.max_rtp_pct,
-        updated_at:       controls.updated_at,
+        id:           controls.id,
+        min_bet:      controls.min_bet,
+        max_bet:      controls.max_bet,
+        win_mode:     controls.win_mode,
+        forced_crash: controls.forced_crash,
+        updated_at:   controls.updated_at,
       },
     });
   },
@@ -284,14 +280,10 @@ authRouter.patch(
   async (req: Request, res: Response) => {
     const ControlsSchema = z
       .object({
-        min_bet:          z.coerce.number().min(0.01).max(1_000_000).optional(),
-        max_bet:          z.coerce.number().min(1).max(10_000_000).optional(),
-        next_crash_point: z.coerce.number().min(1.00).max(130).nullable().optional(),
-        win_mode:         z.enum(["normal", "win", "protect"]).optional(),
-        forced_crash:     z.coerce.number().min(1.00).max(130).nullable().optional(),
-        economics_enabled: z.boolean().optional(),
-        house_hold_pct:   z.coerce.number().min(0).max(1).optional(),
-        max_rtp_pct:      z.coerce.number().min(0).max(1).optional(),
+        min_bet:      z.coerce.number().min(0.01).max(1_000_000).optional(),
+        max_bet:      z.coerce.number().min(1).max(10_000_000).optional(),
+        win_mode:     z.enum(["normal", "protect"]).optional(),
+        forced_crash: z.coerce.number().min(1.00).max(130).nullable().optional(),
       })
       .refine(
         (d) => d.min_bet === undefined || d.max_bet === undefined || d.min_bet <= d.max_bet,
@@ -324,19 +316,13 @@ authRouter.patch(
 
     res.json({
       ok: true,
-      economyPersisted: saved.economyPersisted,
-      ...(saved.warning ? { warning: saved.warning } : {}),
       controls: {
-        id:               saved.controls.id,
-        min_bet:          saved.controls.min_bet,
-        max_bet:          saved.controls.max_bet,
-        next_crash_point: saved.controls.next_crash_point,
-        win_mode:         saved.controls.win_mode,
-        forced_crash:     saved.controls.forced_crash,
-        economics_enabled: saved.controls.economy_enabled,
-        house_hold_pct:   saved.controls.house_hold_pct,
-        max_rtp_pct:      saved.controls.max_rtp_pct,
-        updated_at:       saved.controls.updated_at,
+        id:           saved.controls.id,
+        min_bet:      saved.controls.min_bet,
+        max_bet:      saved.controls.max_bet,
+        win_mode:     saved.controls.win_mode,
+        forced_crash: saved.controls.forced_crash,
+        updated_at:   saved.controls.updated_at,
       },
     });
   },

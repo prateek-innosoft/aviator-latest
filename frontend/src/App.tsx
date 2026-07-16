@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { useGame } from "./store/gameStore";
-import { socket } from "./lib/socket";
 import { Header } from "./components/Header";
 import { HistoryBar } from "./components/HistoryBar";
 import { GameCanvas } from "./components/GameCanvas";
@@ -8,40 +7,21 @@ import { BetPanels } from "./components/BetPanels";
 import { LiveBets } from "./components/LiveBets";
 import { BetErrorToast } from "./components/BetErrorToast";
 import { AdminPanel } from "./admin/AdminPanel";
-import { AuthProvider, useAuth } from "./lib/authContext";
+import { AuthProvider } from "./lib/authContext";
 import { LoadingScreen } from "./components/LoadingScreen";
 
+// The player-facing game is demo-only — there is no player login/logout.
+// (Admin auth lives entirely on the /admin route.) When this module is merged
+// into the host site, the host provides real player identity + wallet.
 function GameApp() {
   const init    = useGame((s) => s.init);
-  const setAuth = useGame((s) => s.setAuth);
   const connected = useGame((s) => s.connected);
   const roundId  = useGame((s) => s.roundId);
-  const { session, profile } = useAuth();
-
-  // For demo/testing mode: work without user authentication
-  // If logged in, identify to backend; otherwise use demo mode
-  useEffect(() => {
-    if (profile && session && profile.role === "user") {
-      setAuth({ userId: profile.id, accessToken: session.access_token });
-      const identify = () => {
-        socket.emit("auth:identify", {
-          userId: profile.id,
-          token: session.access_token,
-        });
-      };
-      if (socket.connected) identify();
-      socket.on("connect", identify);
-      return () => { socket.off("connect", identify); };
-    } else {
-      setAuth({ userId: null, accessToken: null });
-    }
-  }, [profile, session, setAuth]);
 
   useEffect(() => {
     init();
   }, [init]);
 
-  // Show game UI directly in demo/testing mode (no login required)
   const ready = connected && roundId !== "";
 
   return (

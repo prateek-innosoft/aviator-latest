@@ -1,7 +1,6 @@
 import { Logo } from "../assets/Logo";
 import { useGame } from "../store/gameStore";
 import { fmt } from "../lib/format";
-import { PlayerLogin } from "./PlayerLogin";
 
 export function Header() {
   const balance = useGame((s) => s.balance);
@@ -14,7 +13,6 @@ export function Header() {
     >
       <Logo className="h-[26px] sm:h-[30px]" />
       <div className="flex items-center gap-3">
-        <PlayerLogin />
         <div
           data-testid="balance-display"
           className="flex items-center gap-1.5 rounded-full bg-[#0f1112] px-3 py-1 sm:px-4"

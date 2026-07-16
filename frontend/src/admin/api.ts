@@ -4,26 +4,19 @@ export interface AdminControls {
   id: number;
   min_bet: number;
   max_bet: number;
-  next_crash_point: number | null;
-  win_mode: "normal" | "win" | "protect";
+  /** "normal" = Fair (reserve-driven tables), "protect" = fixed conservative table. */
+  win_mode: "normal" | "protect";
   forced_crash: number | null;
-  economics_enabled: boolean;
-  house_hold_pct: number;
-  max_rtp_pct: number;
   updated_at: string;
 }
 
 export interface AdminRoundEconomyEvent {
   roundId: string;
   realStake: number;
+  /** Per-round payout ceiling = reserve + this round's stake. */
   maxPayout: number;
   paidOut: number;
-  // Matches the backend's actual "admin:roundEconomy" payload field name
-  // (RoundEconomyState.economyActive in gameEngine.ts) — this previously
-  // read "economicsActive" here, which never matched, so the Budget pill
-  // below silently never rendered.
   economyActive: boolean;
-  crashAttempts: number;
   reserve: number;
   fairSubMode: "tight" | "normal" | "bonus" | null;
 }
@@ -68,7 +61,7 @@ export const adminApi = {
     req<{ ok: true; controls: AdminControls }>("/api/admin/controls", "GET", token),
 
   patchControls: (token: string, body: Partial<AdminControls>) =>
-    req<{ ok: true; controls: AdminControls; economyPersisted: boolean; warning?: string }>(
+    req<{ ok: true; controls: AdminControls }>(
       "/api/admin/controls", "PATCH", token, body,
     ),
 

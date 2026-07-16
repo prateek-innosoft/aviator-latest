@@ -5,8 +5,6 @@ import { generateBots } from "./fakeBets.js";
 import * as store from "./store.js";
 import { loadAdminControls as fetchAdminControls, applyControlsToEngine } from "./adminControls.js";
 import {
-  assignSimCashoutTarget,
-  computeSafetyCeiling,
   fairTiersFor,
   generateWeightedCrash,
   HARD_CAP_MULTIPLIER,
@@ -32,30 +30,25 @@ const SERVER_INSTANCE_ID = process.env.SERVER_INSTANCE_ID ?? "aviator-server-1";
 /** Company's real starting payout reserve, in INR (₹2,00,000 / 2 lakh). */
 const INITIAL_BANKROLL_INR = 200000;
 
-export type WinMode = "normal" | "win" | "protect";
+/** Fair = reserve-driven tables, protect = fixed conservative table. */
+export type WinMode = "normal" | "protect";
 
 export interface AdminOverrides {
-  nextCrashPoint: number | null;
-  winMode:        WinMode;
-  forcedCrash:    number | null;
-  minBet:         number;
-  maxBet:         number;
-}
-
-export interface EconomyConfig {
-  economyEnabled: boolean;
-  houseHoldPct:   number;
-  maxRtpPct:      number;
+  winMode:     WinMode;
+  /** Custom mode: fixed crash multiplier, or null when not in custom mode. */
+  forcedCrash: number | null;
+  minBet:      number;
+  maxBet:      number;
 }
 
 export interface RoundEconomyState {
-  realStake:      number;
-  maxPayout:      number;
-  paidOut:        number;
-  economyActive:  boolean;
-  crashAttempts:  number;
-  reserve:        number;
-  fairSubMode:    FairSubMode | null;
+  realStake:     number;
+  /** Per-round payout ceiling = reserve + this round's stake. */
+  maxPayout:     number;
+  paidOut:       number;
+  economyActive: boolean;
+  reserve:       number;
+  fairSubMode:   FairSubMode | null;
 }
 
 type BotBet = LiveBet & { target: number };
@@ -65,7 +58,6 @@ export interface PlayerBet {
   userId:   string | null;
   panel: 0 | 1;
   amount: number;
-  simCashoutTarget: number;
   cashedOut: boolean;
   cashedOutAt: number | null;
   win: number | null;
@@ -93,61 +85,33 @@ export class GameEngine extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private crashing = false;
 
-  // Per-round controlled economy (real authenticated bets only).
+  // Per-round economy (all real bets — demo included — count).
   roundRealStake = 0;
+  /** Per-round payout ceiling = current reserve + this round's stake. */
   roundMaxPayout = 0;
   roundPaidOut = 0;
   economyActiveForRound = false;
-  private crashSelectAttempts = 0;
-  private roundNominalBudget = 0;
   /** Which Fair Mode sub-table (tight/normal/bonus) the current round used — set by reserve level, see selectFairSubMode. */
   fairSubMode: FairSubMode | null = null;
   /**
-   * Rolling unspent RTP budget carried between rounds. Rounds that pay out
-   * less than their nominal share (totalStake × RTP) — including rounds
-   * with too few bets for any payout to fit under a nominal-only budget —
-   * bank the surplus here so later rounds can draw on it, pulling the
-   * realized long-run RTP toward the target instead of staying well below
-   * it. Capped relative to stake so no single round can pay out an
-   * unbounded windfall.
+   * The company reserve — a real running ledger. Each round it grows by the
+   * net of that round: stake collected − amount paid out to players. It's
+   * also the per-round payout ceiling (a round can never pay out more than
+   * reserve + that round's own stake), which guarantees the reserve can
+   * never go negative through play. Drives Fair Mode's Tight/Normal/Bonus
+   * selection. Starts at ₹2,00,000; in-memory only (resets on restart).
    */
   private bankroll = INITIAL_BANKROLL_INR;
-  private static readonly BANKROLL_CAP_MULTIPLE = 20;
-  /**
-   * Slow-moving average of real stake per economy-active round, used to
-   * size the bankroll cap. A single round's own stake is too noisy for
-   * this — real traffic swings from a $10 bet to a $50,000 pile-up round
-   * to round, and capping growth at 20x *that one round's* stake would
-   * clip an already-earned reserve down to near-zero the instant a small
-   * round happened to settle right after a big one.
-   *
-   * Seeded so the cap starts at exactly INITIAL_BANKROLL_INR (not 0) — a
-   * cold value of 0 used to make settleBankroll() set this straight to the
-   * very FIRST round's own stake (see the old `=== 0 ? roundRealStake`
-   * branch), which reproduced precisely the failure mode described above
-   * on every fresh server start: one small first bet (e.g. ₹10) would
-   * collapse a real ₹2,00,000 reserve down to ₹200 in a single round.
-   */
-  private avgRealStakeEma = INITIAL_BANKROLL_INR / GameEngine.BANKROLL_CAP_MULTIPLE;
-  private static readonly STAKE_EMA_ALPHA = 0.02;
 
   overrides: AdminOverrides = {
-    nextCrashPoint: null,
-    winMode:        "normal",
-    forcedCrash:    null,
-    minBet:         1,
-    maxBet:         50000,
+    winMode:     "normal",
+    forcedCrash: null,
+    minBet:      1,
+    maxBet:      50000,
   };
 
-  economy: EconomyConfig = {
-    economyEnabled: true,
-    houseHoldPct:   0.30,
-    maxRtpPct:      0.70,
-  };
-
-  setNextCrashOverride(v: number | null) { this.overrides.nextCrashPoint = v; }
-  setWinMode(m: WinMode)                { this.overrides.winMode = m; }
-  setForcedCrash(v: number | null)      { this.overrides.forcedCrash = v; }
+  setWinMode(m: WinMode)           { this.overrides.winMode = m; }
+  setForcedCrash(v: number | null) { this.overrides.forcedCrash = v; }
   setBetLimits(min?: number, max?: number) {
     if (min !== undefined) this.overrides.minBet = min;
     if (max !== undefined) this.overrides.maxBet = max;
@@ -160,21 +124,11 @@ export class GameEngine extends EventEmitter {
 
   /**
    * Directly set the reserve (e.g. an admin withdrawal/top-up via the API).
-   * Clamped to >= 0 — the reserve funds payouts, it can't go negative by
-   * being set that way (it can still drift to 0 through normal play).
-   *
-   * Also raises avgRealStakeEma's floor if needed. The EMA-based cap (see
-   * its own comment above) exists to stop a real round's own tiny stake
-   * from silently collapsing a real reserve — but that same cap would
-   * immediately claw an admin's manual top-up back down on the very next
-   * settled round if typical recent stakes are small (cap = avgStake × 20).
-   * Raising the floor here means an explicit admin action always sticks;
-   * it only ever raises the cap, never re-opens the original collapse bug.
+   * Clamped to >= 0. It then continues to move with real play from this new
+   * value via settleBankroll().
    */
   setBankroll(amount: number): void {
     this.bankroll = Math.max(0, Math.round(amount * 100) / 100);
-    const requiredEma = round2(this.bankroll / GameEngine.BANKROLL_CAP_MULTIPLE);
-    if (requiredEma > this.avgRealStakeEma) this.avgRealStakeEma = requiredEma;
   }
 
   getPlayerBet(socketId: string, panel: 0 | 1): PlayerBet | null {
@@ -183,10 +137,9 @@ export class GameEngine extends EventEmitter {
 
   /**
    * Total stake counted toward the round's economy. Includes demo (no
-   * userId) bets too — without a full player/wallet system wired in yet,
-   * this is what makes placing a bet through the UI actually engage the
-   * real RTP-guaranteed crash formula instead of always falling back to
-   * lure mode (which only fires when truly nobody has anything at stake).
+   * userId) bets too, so any bet placed through the UI engages the real
+   * economy (fair/protect) rather than falling into lure mode — lure only
+   * fires when truly nobody has anything at stake.
    */
   sumRealStake(): number {
     return round2(this.playerBets.reduce((s, b) => s + b.amount, 0));
@@ -227,20 +180,20 @@ export class GameEngine extends EventEmitter {
   }
 
   /**
-   * Bank this round's unspent RTP share (or draw down if it overspent) so
-   * future rounds' payout ceiling reflects the real running average, not
-   * just each round's own tiny slice. Runs once per round, right when the
-   * round finalizes (no more cashouts possible after this).
+   * The reserve is a real ledger: after each economy-active round it moves
+   * by that round's net for the house — the stake it collected minus what it
+   * paid out. Players losing (crashing before cashout) grows the reserve;
+   * players winning shrinks it. Runs once per round at finalization.
+   *
+   * The reserve can never go below 0 here: roundMaxPayout is capped at
+   * (reserve + stake), and cashouts are rejected past that ceiling, so
+   * roundPaidOut <= reserve + roundRealStake always — the subtraction below
+   * therefore stays >= 0. The max(0, …) is just belt-and-suspenders.
    */
   private settleBankroll(): void {
     if (!this.economyActiveForRound) return;
-    this.avgRealStakeEma = round2(
-      (1 - GameEngine.STAKE_EMA_ALPHA) * this.avgRealStakeEma +
-      GameEngine.STAKE_EMA_ALPHA * this.roundRealStake,
-    );
-    const surplus = round2(this.roundNominalBudget - this.roundPaidOut);
-    const cap = round2(Math.max(this.avgRealStakeEma, 1) * GameEngine.BANKROLL_CAP_MULTIPLE);
-    this.bankroll = Math.min(cap, Math.max(0, round2(this.bankroll + surplus)));
+    const net = round2(this.roundRealStake - this.roundPaidOut);
+    this.bankroll = Math.max(0, round2(this.bankroll + net));
   }
 
   emitRoundEconomics(): void {
@@ -250,113 +203,73 @@ export class GameEngine extends EventEmitter {
       maxPayout: this.roundMaxPayout,
       paidOut: this.roundPaidOut,
       economyActive: this.economyActiveForRound,
-      crashAttempts: this.crashSelectAttempts,
       reserve: this.bankroll,
       fairSubMode: this.fairSubMode,
     };
     this.emit("admin:roundEconomy", payload);
   }
 
-  /** Win-mode crash (100x–130x) — bypasses economy table. */
-  private computeWinModeCrash(): number {
-    return round2(100 + Math.random() * 30);
-  }
-
   /**
-   * Lock bets and pick crash multiplier right before flight.
-   * Uses weighted probability table + payout simulation against RTP budget.
+   * Lock bets and pick this round's crash multiplier right before flight.
+   *
+   * Mode precedence (per the disclosed design — no RTP anywhere):
+   *   1. No real stake            → LURE (wide table; no money at risk)
+   *   2. Custom (forcedCrash set) → the exact multiplier the admin typed
+   *   3. Protect                  → fixed conservative two-tier table
+   *   4. Fair (default)           → reserve-driven Tight/Normal/Bonus table
+   *
+   * For every economy-active branch (2–4) the per-round payout ceiling is
+   * (reserve + this round's stake): the house can never pay out more than it
+   * holds plus what it just collected, which keeps the reserve solvent.
    */
   private lockRoundAndSelectCrash(): void {
     this.roundRealStake = this.sumRealStake();
 
-    if (this.overrides.forcedCrash !== null) {
-      // Custom mode: the admin-entered multiplier is honored exactly — the RTP
-      // budget must not cut the round short before this crash point is reached.
-      this.crashPoint = round2(Math.min(this.overrides.forcedCrash, HARD_CAP_MULTIPLIER));
-      this.economyActiveForRound = false;
-      this.roundMaxPayout = 0;
-      this.roundNominalBudget = 0;
-      this.crashSelectAttempts = 0;
-      return;
-    }
-
-    if (this.overrides.nextCrashPoint !== null) {
-      this.crashPoint = round2(Math.min(this.overrides.nextCrashPoint, HARD_CAP_MULTIPLIER));
-      this.overrides.nextCrashPoint = null;
-      this.economyActiveForRound = this.economy.economyEnabled && this.roundRealStake > 0;
-      this.roundNominalBudget = this.economyActiveForRound
-        ? round2(this.roundRealStake * this.economy.maxRtpPct)
-        : 0;
-      this.roundMaxPayout = this.roundNominalBudget;
-      this.crashSelectAttempts = 0;
-      return;
-    }
-
-    if (this.overrides.winMode === "win") {
-      this.crashPoint = round2(Math.min(this.computeWinModeCrash(), HARD_CAP_MULTIPLIER));
-      this.economyActiveForRound = false;
-      this.roundMaxPayout = 0;
-      this.roundNominalBudget = 0;
-      this.crashSelectAttempts = 0;
-      return;
-    }
-
-    if (!this.economy.economyEnabled || this.roundRealStake <= 0) {
-      // No real stakes — nobody has money on the line, so fly an enticing
-      // "lure" round skewed toward higher multipliers instead of the normal
-      // budget-constrained table, to make watchers want to place a bet.
+    // 1. Nobody has real money on the line — fly an enticing lure round.
+    //    This takes precedence over every admin mode: with zero stake there
+    //    is no bet to honor, so a Custom/Protect/Fair setting doesn't apply.
+    if (this.roundRealStake <= 0) {
       this.crashPoint = generateWeightedCrash(Math.random, NO_BET_LURE_TIERS);
       this.economyActiveForRound = false;
       this.roundMaxPayout = 0;
-      this.roundNominalBudget = 0;
-      this.crashSelectAttempts = 1;
+      this.fairSubMode = null;
       return;
     }
 
+    // The reserve funds payouts; a round can never pay out more than the
+    // house holds plus what it just took this round.
+    this.roundMaxPayout = round2(this.bankroll + this.roundRealStake);
+    this.economyActiveForRound = true;
+
+    // 2. Custom mode: honor the admin's exact fixed crash.
+    if (this.overrides.forcedCrash !== null) {
+      this.crashPoint = round2(Math.min(this.overrides.forcedCrash, HARD_CAP_MULTIPLIER));
+      this.fairSubMode = null;
+      console.log(`[Economy][custom] stake=${this.roundRealStake} crash=${this.crashPoint}`);
+      return;
+    }
+
+    // 3. Protect mode: fixed conservative two-tier table.
     if (this.overrides.winMode === "protect") {
-      // Deliberately conservative disclosed table (70% 1.00-1.30x, 28%
-      // 1.30-2.00x, 2% 2.00-2.50x) instead of the RTP formula — for a
-      // thin-reserve launch window. Still a genuine random draw with no
-      // knowledge of bet amounts; only the shape of the distribution
-      // changes. The live budget/circuit-breaker still applies underneath
-      // it, same as normal mode.
       this.crashPoint = round2(
         Math.min(generateWeightedCrash(Math.random, PROTECT_MODE_TIERS), HARD_CAP_MULTIPLIER),
       );
-      this.roundNominalBudget = round2(this.roundRealStake * this.economy.maxRtpPct);
-      this.roundMaxPayout = computeSafetyCeiling(
-        this.roundRealStake,
-        this.economy.maxRtpPct,
-        this.bankroll,
-      );
-      this.economyActiveForRound = true;
-      this.crashSelectAttempts = 1;
-
+      this.fairSubMode = null;
       console.log(
-        `[RoundEconomy][protect] stake=${this.roundRealStake} maxPayout=${this.roundMaxPayout} ` +
-        `crash=${this.crashPoint}`,
+        `[Economy][protect] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
+        `maxPayout=${this.roundMaxPayout} crash=${this.crashPoint}`,
       );
       return;
     }
 
-    // Fair Mode: the sub-mode is picked from the current reserve alone
-    // (never from bet amounts), so it's a disclosed, uniform rule applied
-    // identically to every player in the round — see selectFairSubMode.
+    // 4. Fair mode: sub-mode picked from the current reserve alone (never from
+    //    bet amounts) — a disclosed, uniform rule for everyone in the round.
     this.fairSubMode = selectFairSubMode(this.bankroll, Math.random);
     this.crashPoint = round2(
       Math.min(generateWeightedCrash(Math.random, fairTiersFor(this.fairSubMode)), HARD_CAP_MULTIPLIER),
     );
-    this.roundNominalBudget = round2(this.roundRealStake * this.economy.maxRtpPct);
-    this.roundMaxPayout = computeSafetyCeiling(
-      this.roundRealStake,
-      this.economy.maxRtpPct,
-      this.bankroll,
-    );
-    this.economyActiveForRound = true;
-    this.crashSelectAttempts = 1;
-
     console.log(
-      `[RoundEconomy][fair:${this.fairSubMode}] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
+      `[Economy][fair:${this.fairSubMode}] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
       `maxPayout=${this.roundMaxPayout} crash=${this.crashPoint}`,
     );
   }
@@ -387,7 +300,8 @@ export class GameEngine extends EventEmitter {
       const controls = await fetchAdminControls();
       applyControlsToEngine(this, controls);
       console.log(
-        `[GameEngine] Admin controls loaded: winMode=${controls.win_mode} rtp=${controls.max_rtp_pct}`,
+        `[GameEngine] Admin controls loaded: winMode=${controls.win_mode} ` +
+        `forcedCrash=${controls.forced_crash ?? "none"}`,
       );
     } catch (err) {
       console.warn("[GameEngine] Exception loading admin controls:", err);
@@ -409,10 +323,8 @@ export class GameEngine extends EventEmitter {
     this.crashing = false;
     this.roundRealStake = 0;
     this.roundMaxPayout = 0;
-    this.roundNominalBudget = 0;
     this.roundPaidOut = 0;
     this.economyActiveForRound = false;
-    this.crashSelectAttempts = 0;
     this.fairSubMode = null;
 
     const s = generateSeed();
@@ -570,7 +482,6 @@ export class GameEngine extends EventEmitter {
       userId:   userId ?? null,
       panel,
       amount,
-      simCashoutTarget: assignSimCashoutTarget(),
       cashedOut: false,
       cashedOutAt: null,
       win: null,
@@ -592,8 +503,8 @@ export class GameEngine extends EventEmitter {
    * now, independent of the tick loop's cache. `this.multiplier` (and any
    * caller-supplied snapshot) only refreshes once per TICK_MS and can be
    * up to that long behind, which matters a lot right at flight start:
-   * ~30% of real-money rounds have crashPoint === 1.00 exactly (per the
-   * RTP formula), and there's a real window before the first tick where
+   * the tables can produce crashPoint === 1.00 exactly (e.g. the low end of
+   * Tight/Protect), and there's a real window before the first tick where
    * `this.multiplier` is still frozen at 1.00 — a cashout landing there
    * would otherwise be paid at 1.00x (break-even) on a round that should
    * be a 100% loss.
