@@ -1,4 +1,4 @@
-import { nestGet, nestPut, AVIATOR_ENGINE_SESSION_TOKEN } from "./nestClient.js";
+import { nestEngineGet, nestEnginePut } from "./nestClient.js";
 import type { GameEngine, WinMode } from "./gameEngine.js";
 
 /**
@@ -78,9 +78,8 @@ function fromNestState(state: AviatorStateResponse): AdminControlsState {
 
 /** Load persisted admin controls from the platform backend (source of truth for min/max/winMode/forcedCrash). */
 export async function loadAdminControls(): Promise<AdminControlsState> {
-  const result = await nestGet<{ success: boolean; data: AviatorStateResponse }>(
+  const result = await nestEngineGet<{ success: boolean; data: AviatorStateResponse }>(
     "/aviator/admin/config",
-    AVIATOR_ENGINE_SESSION_TOKEN,
   );
 
   if (result.ok && result.data?.data) {
@@ -120,9 +119,8 @@ export async function saveAdminControls(
     customRevertTo = null;
   }
 
-  const result = await nestPut<{ success: boolean; data: AviatorStateResponse }>(
+  const result = await nestEnginePut<{ success: boolean; data: AviatorStateResponse }>(
     "/aviator/admin/config",
-    AVIATOR_ENGINE_SESSION_TOKEN,
     {
       minBet: patch.min_bet,
       maxBet: patch.max_bet,

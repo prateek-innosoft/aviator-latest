@@ -4,10 +4,11 @@
 // Aviator module instead of local process memory.
 const NEST_API_URL = process.env.NEST_API_URL;
 
-// Long-lived admin-role game-session token, minted once via the platform
-// (SpinforgeGameSessionService.issue(systemAdminId, gameId, 'admin')) — lets
-// the engine read winMode/forcedCrash without a per-player token.
-export const AVIATOR_ENGINE_SESSION_TOKEN = process.env.AVIATOR_ENGINE_SESSION_TOKEN;
+// Static shared secret — same value pasted into the platform's
+// AVIATOR_ENGINE_API_KEY env var — that lets this engine read/write
+// winMode/forcedCrash and settle rounds without a per-admin-login token.
+// Server-to-server credential, not a session: no expiry, no minting flow.
+export const AVIATOR_ENGINE_API_KEY = process.env.AVIATOR_ENGINE_API_KEY;
 
 if (!NEST_API_URL) {
   throw new Error(
@@ -28,13 +29,14 @@ async function request<T = unknown>(
   method: "GET" | "POST" | "PUT",
   token: string | undefined,
   body?: unknown,
+  headerName: "x-game-session-token" | "x-engine-api-key" = "x-game-session-token",
 ): Promise<NestResult<T>> {
   try {
     const res = await fetch(`${NEST_API_URL}${path}`, {
       method,
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { "x-game-session-token": token } : {}),
+        ...(token ? { [headerName]: token } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -56,12 +58,12 @@ async function request<T = unknown>(
   }
 }
 
-/** GET, authenticated with a caller-supplied game-session token (player or engine-admin). */
+/** GET, authenticated with a caller-supplied player game-session token. */
 export function nestGet<T = unknown>(path: string, token: string | undefined) {
   return request<T>(path, "GET", token);
 }
 
-/** POST, authenticated with a caller-supplied game-session token. */
+/** POST, authenticated with a caller-supplied player game-session token. */
 export function nestPost<T = unknown>(
   path: string,
   token: string | undefined,
@@ -70,11 +72,26 @@ export function nestPost<T = unknown>(
   return request<T>(path, "POST", token, body);
 }
 
-/** PUT, authenticated with a caller-supplied game-session token. */
+/** PUT, authenticated with a caller-supplied player game-session token. */
 export function nestPut<T = unknown>(
   path: string,
   token: string | undefined,
   body?: unknown,
 ) {
   return request<T>(path, "PUT", token, body);
+}
+
+/** GET, authenticated with the engine's static AVIATOR_ENGINE_API_KEY. */
+export function nestEngineGet<T = unknown>(path: string) {
+  return request<T>(path, "GET", AVIATOR_ENGINE_API_KEY, undefined, "x-engine-api-key");
+}
+
+/** POST, authenticated with the engine's static AVIATOR_ENGINE_API_KEY. */
+export function nestEnginePost<T = unknown>(path: string, body?: unknown) {
+  return request<T>(path, "POST", AVIATOR_ENGINE_API_KEY, body, "x-engine-api-key");
+}
+
+/** PUT, authenticated with the engine's static AVIATOR_ENGINE_API_KEY. */
+export function nestEnginePut<T = unknown>(path: string, body?: unknown) {
+  return request<T>(path, "PUT", AVIATOR_ENGINE_API_KEY, body, "x-engine-api-key");
 }
