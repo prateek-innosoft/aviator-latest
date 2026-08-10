@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { socket } from "../lib/socket";
+import { clientSessionId, socket } from "../lib/socket";
 import type {
   GamePhase,
   LiveBet,
@@ -83,6 +83,20 @@ const GROWTH = 0.16;
 let rafId: number | null = null;
 let anchorMult = 1.0;      // last server-confirmed multiplier
 let anchorAt = 0;          // performance.now() when that value was received
+let flightStartedAtServer: number | null = null;
+let serverClockOffsetMs: number | null = null; // server Date.now() - browser Date.now()
+
+function syncServerClock() {
+  const sentAt = Date.now();
+  socket.emit("time:sync", (reply: { serverTime?: number }) => {
+    if (!Number.isFinite(reply?.serverTime)) return;
+    const receivedAt = Date.now();
+    // NTP-style midpoint removes roughly half of the round-trip latency. This
+    // matters on polling tunnels where packets may arrive hundreds of ms late.
+    serverClockOffsetMs = reply.serverTime! - (sentAt + receivedAt) / 2;
+    if (useGame.getState().phase === "flying") startMultiplierAnim();
+  });
+}
 
 function stopMultiplierAnim() {
   if (rafId != null && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(rafId);
@@ -95,8 +109,15 @@ function startMultiplierAnim() {
   const loop = () => {
     const s = useGame.getState();
     if (s.phase !== "flying") { rafId = null; return; }
-    const dt = Math.max(0, (performance.now() - anchorAt) / 1000);
-    const display = Math.floor(anchorMult * Math.exp(GROWTH * dt) * 100) / 100;
+    const display = flightStartedAtServer != null && serverClockOffsetMs != null
+      ? Math.floor(
+          Math.exp(
+            GROWTH * Math.max(0, (Date.now() + serverClockOffsetMs - flightStartedAtServer) / 1000),
+          ) * 100,
+        ) / 100
+      : Math.floor(
+          anchorMult * Math.exp(GROWTH * Math.max(0, (performance.now() - anchorAt) / 1000)) * 100,
+        ) / 100;
     if (display !== s.multiplier) useGame.setState({ multiplier: display });
     rafId = requestAnimationFrame(loop);
   };
@@ -117,7 +138,7 @@ export const useGame = create<GameState>((set, get) => ({
   currency: "INR",
   crashFlash: null,
   flyingStartedAt: null,
-  panels: [defaultPanel(2), defaultPanel(2)],
+  panels: [defaultPanel(100), defaultPanel(100)],
   lastWinToast: null,
   userId: null,
   accessToken: null,
@@ -152,7 +173,10 @@ export const useGame = create<GameState>((set, get) => ({
       // Balance is deducted by the server, which echoes the authoritative
       // value back via "bet:accepted". No optimistic mutation here — that was
       // the source of balance flicker/desync.
-      socket.emit("bet:place", { panel, amount: p.amount, ...(isAuth ? { userId } : {}) });
+      // autoCashOutTarget lets the server resolve the cash-out itself, in its
+      // own tick loop — exact, no client round-trip to overshoot or race.
+      const autoCashOutTarget = p.autoCashOut ? p.autoCashOutValue : null;
+      socket.emit("bet:place", { panel, amount: p.amount, autoCashOutTarget, clientId: clientSessionId, ...(isAuth ? { userId } : {}) });
       get().setPanel(panel, { active: true, betIsAuthenticated: isAuth });
     } else {
       // Queue for next round. The server only takes the money when the bet is
@@ -177,7 +201,7 @@ export const useGame = create<GameState>((set, get) => ({
 
     // Active bet: server refunds and echoes the authoritative balance back via
     // "bet:cancelled". No optimistic refund here.
-    socket.emit("bet:cancelWithAmount", { panel, amount: p.amount, ...(isAuth ? { userId } : {}) });
+    socket.emit("bet:cancelWithAmount", { panel, amount: p.amount, clientId: clientSessionId, ...(isAuth ? { userId } : {}) });
     get().setPanel(panel, { active: false, queued: false });
   },
 
@@ -191,7 +215,7 @@ export const useGame = create<GameState>((set, get) => ({
     // the backend trying to find a DB bet that doesn't exist.
     const isAuth = p.betIsAuthenticated && !!userId;
     get().setPanel(panel, { cashOutPending: true });
-    socket.emit("bet:cashout", { panel, ...(isAuth ? { userId } : {}) });
+    socket.emit("bet:cashout", { panel, clientId: clientSessionId, ...(isAuth ? { userId } : {}) });
   },
 
   init: () => {
@@ -206,8 +230,30 @@ export const useGame = create<GameState>((set, get) => ({
     // dev nuisance: guard so init() only ever wires listeners once.
     if (initialized) return;
     initialized = true;
-    socket.on("connect", () => set({ connected: true }));
+    socket.on("connect", () => {
+      set({ connected: true });
+      syncServerClock();
+    });
     socket.on("disconnect", () => { stopMultiplierAnim(); set({ connected: false }); });
+    if (socket.connected) {
+      set({ connected: true });
+      syncServerClock();
+    }
+
+    // Browsers pause requestAnimationFrame entirely while a tab is hidden, but
+    // don't clear rafId just because the callback stopped firing — so a stale
+    // loop can sit dormant instead of cleanly resuming. tick:multiplier and
+    // round:crashed keep updating anchorMult/anchorAt/phase correctly the whole
+    // time (they aren't rAF-gated), so on return we just need a clean restart
+    // of the animation from that already-correct state — not a resync.
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        syncServerClock();
+        stopMultiplierAnim();
+        if (get().phase === "flying") startMultiplierAnim();
+      });
+    }
 
     socket.on(
       "init",
@@ -230,7 +276,9 @@ export const useGame = create<GameState>((set, get) => ({
           totalWin: st.totalWin,
           ...(alreadyAuthed ? {} : { balance: data.balance }),
           currency: data.currency,
-          flyingStartedAt: st.phase === "flying" ? Date.now() : null,
+          flyingStartedAt: st.phase === "flying" && st.flightStartedAt
+            ? st.flightStartedAt - (serverClockOffsetMs ?? 0)
+            : null,
           ...(data.betLimits ? { betLimits: data.betLimits } : {}),
         });
         // Clamp panel amounts to the received bet limits.
@@ -246,6 +294,7 @@ export const useGame = create<GameState>((set, get) => ({
         }
         // Reconnected mid-flight — anchor and start the smooth loop.
         if (st.phase === "flying") {
+          flightStartedAtServer = st.flightStartedAt;
           anchorMult = st.multiplier;
           anchorAt = performance.now();
           startMultiplierAnim();
@@ -255,6 +304,7 @@ export const useGame = create<GameState>((set, get) => ({
 
     socket.on("round:betting", (st: PublicRoundState) => {
       stopMultiplierAnim();
+      flightStartedAtServer = null;
       // Remember which panels wanted to bet this round (queued last round or auto).
       const prev = get().panels;
       const wantsBet = prev.map((p) => p.queued || p.autoBet);
@@ -297,7 +347,8 @@ export const useGame = create<GameState>((set, get) => ({
         const userId = s.userId;
         const isAuth = !!userId;
         if (wasQueued) {
-          socket.emit("bet:place", { panel: i, amount: p.amount, ...(isAuth ? { userId } : {}) });
+          const autoCashOutTarget = p.autoCashOut ? p.autoCashOutValue : null;
+          socket.emit("bet:place", { panel: i, amount: p.amount, autoCashOutTarget, clientId: clientSessionId, ...(isAuth ? { userId } : {}) });
           s.setPanel(i as 0 | 1, { active: true, queued: false, betIsAuthenticated: isAuth });
         } else if (prev[i].autoBet && p.mode === "auto" && p.amount <= s.balance) {
           // Auto Cash Out only ever fires while mode === "auto" (see tick:multiplier
@@ -314,10 +365,13 @@ export const useGame = create<GameState>((set, get) => ({
     );
 
     socket.on("round:flying", (st: PublicRoundState) => {
+      flightStartedAtServer = st.flightStartedAt;
       set({
         phase: "flying",
         multiplier: 1.0,
-        flyingStartedAt: Date.now(),
+        flyingStartedAt: st.flightStartedAt
+          ? st.flightStartedAt - (serverClockOffsetMs ?? 0)
+          : Date.now(),
         bets: st.bets,
         totalBets: st.totalBets,
         totalWin: st.totalWin,
@@ -344,23 +398,6 @@ export const useGame = create<GameState>((set, get) => ({
           set({ multiplier: p.multiplier, bets: p.bets, totalWin });
         }
 
-        // Auto cash-out handling (auto tab only, once per round). Uses the
-        // authoritative server multiplier p.multiplier, not the interpolated
-        // display, so cash-out timing stays exact.
-        const s = get();
-        if (s.phase !== "flying") return;
-        s.panels.forEach((panel, i) => {
-          if (
-            panel.mode === "auto" &&
-            panel.active &&
-            !panel.cashedOut &&
-            !panel.cashOutPending &&
-            panel.autoCashOut &&
-            p.multiplier >= panel.autoCashOutValue
-          ) {
-            get().cashOut(i as 0 | 1);
-          }
-        });
       },
     );
 
@@ -373,6 +410,7 @@ export const useGame = create<GameState>((set, get) => ({
       }) => {
         // Stop the smooth loop and snap to the authoritative crash value.
         stopMultiplierAnim();
+        flightStartedAtServer = null;
         set((s) => {
           const panels = s.panels.map((panel) => ({
             ...panel,
@@ -447,6 +485,14 @@ export const useGame = create<GameState>((set, get) => ({
       set({ balance: p.balance });
     });
 
+    // Platform session token was missing/invalid/expired — the server never
+    // marked this socket authed, so it silently plays on the demo wallet.
+    // Surface that instead of leaving a real player wondering why nothing's
+    // hitting their real balance.
+    socket.on("auth:failed", () => {
+      set({ userId: null, accessToken: null, betErrorToast: { msg: "Session expired — playing in demo mode", at: Date.now() } });
+    });
+
     socket.on(
       "bet:cashedout",
       (p: {
@@ -481,10 +527,14 @@ export const useGame = create<GameState>((set, get) => ({
       // silent — this was previously silent, which read exactly like "the
       // multiplier passed my target but nothing happened."
       get().setPanel(p.panel, { cashOutPending: false });
-      if (p.reason === "not_flying" || p.reason === "rejected") {
+      if (p.reason === "round_ended" || p.reason === "not_flying") {
         set({ betErrorToast: { msg: "Missed it — the round ended before your cash out went through", at: Date.now() } });
       } else if (p.reason === "budget_exhausted") {
         set({ betErrorToast: { msg: "Round capped — bet settled at the payout limit", at: Date.now() } });
+      } else if (p.reason === "bet_not_found") {
+        set({ betErrorToast: { msg: "Cash out could not find your active bet - please try once more", at: Date.now() } });
+      } else if (p.reason === "rejected") {
+        set({ betErrorToast: { msg: "Cash out could not be completed - please try again", at: Date.now() } });
       }
     });
   },

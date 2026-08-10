@@ -17,8 +17,15 @@ declare global {
   var __io: import("socket.io").Server | undefined;
 }
 
-// ── Simple admin credentials ───────────────────────────────────────────────
-// Hardcoded for now — no Supabase Auth dependency.
+// ── Local admin panel credentials ──────────────────────────────────────────
+// This engine no longer has real players logging in locally — a player
+// arrives already authenticated via the platform's own game-session token
+// (forwarded straight through to the platform on every wallet call, see
+// index.ts). This login is only for the engine's own local admin panel
+// (bet limits, reserve, Custom crash overrides) until a hosted admin
+// frontend on the platform replaces it — see docs/AVIATOR.md "Known gaps"
+// in the platform repo. Real admin actions can also go directly through the
+// platform's own admin auth (AviatorAdminController).
 const ADMIN_EMAIL    = "admin@aviator.com";
 const ADMIN_PASSWORD = "admin123";
 const ADMIN_ID       = "admin-0000-0000-0000-000000000001";
@@ -79,7 +86,7 @@ const LoginSchema = z.object({
   password: z.string().min(6).max(128),
 });
 
-// ── Token verification middleware ──────────────────────────────────────────
+// ── Token verification middleware (admin panel only) ────────────────────────
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
@@ -114,7 +121,7 @@ export interface AuthedRequest extends Request {
   token?: string;
 }
 
-// ── POST /api/auth/login ──────────────────────────────────────────────────
+// ── POST /api/auth/login (admin panel only) ─────────────────────────────────
 authRouter.post("/login", loginLimiter, async (req: Request, res: Response) => {
   const parse = LoginSchema.safeParse(req.body);
   if (!parse.success) {
@@ -123,57 +130,29 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response) => {
   }
   const { email, password } = parse.data;
 
-  // Simple hardcoded admin check
-  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    const exp = Date.now() + 24 * 60 * 60 * 1000; // 24-hour token
-    const token = signToken({ id: ADMIN_ID, email: ADMIN_EMAIL, role: "admin", exp });
-    res.json({
-      ok: true,
-      access_token:  token,
-      refresh_token: token,
-      expires_at:    Math.floor(exp / 1000),
-      user: {
-        id:           ADMIN_ID,
-        email:        ADMIN_EMAIL,
-        username:     "admin",
-        display_name: "Admin",
-        role:         "admin",
-        kyc_status:   "verified",
-        balance:      0,
-        currency:     "INR",
-      },
-    });
+  if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
+    res.status(401).json({ ok: false, reason: "invalid_credentials" });
     return;
   }
 
-  // Regular player login — verify credentials against the store, then issue
-  // the same token format as admin. (Host integration: replace store.verifyLogin
-  // with the site's own auth check.)
-  const profile = store.verifyLogin(email, password);
-  if (profile) {
-    const wallet = store.getWallet(profile.id);
-    const exp = Date.now() + 24 * 60 * 60 * 1000;
-    const token = signToken({ id: profile.id, email: profile.email, role: profile.role, exp });
-    res.json({
-      ok: true,
-      access_token: token,
-      refresh_token: token,
-      expires_at: Math.floor(exp / 1000),
-      user: {
-        id: profile.id,
-        email: profile.email,
-        username: profile.email.split("@")[0],
-        display_name: profile.email.split("@")[0],
-        role: profile.role,
-        kyc_status: profile.kyc_status,
-        balance: wallet ? wallet.balance : 0,
-        currency: wallet?.currency ?? "INR",
-      },
-    });
-    return;
-  }
-
-  res.status(401).json({ ok: false, reason: "invalid_credentials" });
+  const exp = Date.now() + 24 * 60 * 60 * 1000; // 24-hour token
+  const token = signToken({ id: ADMIN_ID, email: ADMIN_EMAIL, role: "admin", exp });
+  res.json({
+    ok: true,
+    access_token:  token,
+    refresh_token: token,
+    expires_at:    Math.floor(exp / 1000),
+    user: {
+      id:           ADMIN_ID,
+      email:        ADMIN_EMAIL,
+      username:     "admin",
+      display_name: "Admin",
+      role:         "admin",
+      kyc_status:   "verified",
+      balance:      0,
+      currency:     "INR",
+    },
+  });
 });
 
 // ── POST /api/auth/refresh ─────────────────────────────────────────────────
@@ -206,47 +185,20 @@ authRouter.post("/logout", requireAuth, async (_req: Request, res: Response) => 
   res.json({ ok: true });
 });
 
-// ── GET /api/auth/me ────────────────────────────────────────────────────────
+// ── GET /api/auth/me (admin panel only) ─────────────────────────────────────
 authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
   const user = (req as AuthedRequest).user!;
-
-  // Admin is not a real DB row (see ADMIN_ID above) — keep its response
-  // hardcoded. Everyone else must reflect their real profile + wallet.
-  if (user.id === ADMIN_ID) {
-    res.json({
-      ok: true,
-      user: {
-        id:           user.id,
-        email:        user.email ?? ADMIN_EMAIL,
-        username:     "admin",
-        display_name: "Admin",
-        role:         "admin",
-        kyc_status:   "verified",
-        balance:      0,
-        currency:     "INR",
-      },
-    });
-    return;
-  }
-
-  const profile = store.getUserProfile(user.id);
-  if (!profile) {
-    res.status(404).json({ ok: false, reason: "user_not_found" });
-    return;
-  }
-  const wallet = store.getWallet(profile.id);
-
   res.json({
     ok: true,
     user: {
-      id:           profile.id,
-      email:        profile.email,
-      username:     profile.email.split("@")[0],
-      display_name: profile.email.split("@")[0],
-      role:         profile.role,
-      kyc_status:   profile.kyc_status,
-      balance:      wallet ? wallet.balance : 0,
-      currency:     wallet?.currency ?? "INR",
+      id:           user.id,
+      email:        user.email ?? ADMIN_EMAIL,
+      username:     "admin",
+      display_name: "Admin",
+      role:         "admin",
+      kyc_status:   "verified",
+      balance:      0,
+      currency:     "INR",
     },
   });
 });
@@ -330,8 +282,8 @@ authRouter.patch(
 
 // ── GET /api/admin/reserve ──────────────────────────────────────────────────
 // The company reserve (bankroll) — starts at ₹2,00,000, drives Fair Mode's
-// Tight/Normal/Bonus selection. Separate from /admin/controls because this
-// is live financial state, not a persisted setting.
+// Tight/Normal/Bonus selection. Local to the engine — the platform backend
+// has no reserve/bankroll concept.
 authRouter.get(
   "/admin/reserve",
   adminLimiter,
@@ -375,6 +327,8 @@ authRouter.patch(
 );
 
 // ── GET /api/admin/stats ───────────────────────────────────────────────────
+// Round/crash history only — real user/wallet aggregates live on the
+// platform backend now, not in this engine's local store.
 authRouter.get(
   "/admin/stats",
   adminLimiter,

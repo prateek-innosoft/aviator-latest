@@ -25,6 +25,8 @@ export interface PublicRoundState {
   bets: LiveBet[];
   totalBets: number;
   totalWin: number;
+  /** Server wall-clock timestamp when the current flight began. */
+  flightStartedAt: number | null;
 }
 
 export type BetMode = "bet" | "auto";

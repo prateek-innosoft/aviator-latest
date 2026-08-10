@@ -133,6 +133,64 @@ assert(e.placeBet("sock-2", 0, 10) === false, "bet rejected during flight");
     `custom mode with a real bet crashes at exactly the forced value (got ${(eCustom as any).crashPoint})`,
   );
 }
+{
+  // Custom mode is one-shot: once a round with real stake actually uses the
+  // forced crash, the engine must immediately revert its own overrides to
+  // whichever mode was active before Custom was chosen — no second round
+  // should still see forcedCrash set.
+  const eRevert = new GameEngine();
+  eRevert.overrides.winMode = "protect";
+  eRevert.overrides.forcedCrash = 3.5;
+  eRevert.overrides.customRevertTo = "protect"; // as adminControls.ts would set on entering Custom
+  (eRevert as any).phase = "betting";
+  (eRevert as any).playerBets = [];
+  eRevert.placeBet("sock-revert", 0, 100);
+  (eRevert as any).lockRoundAndSelectCrash();
+  assert(
+    (eRevert as any).crashPoint === 3.5,
+    `round consuming custom mode still crashes at the forced value (got ${(eRevert as any).crashPoint})`,
+  );
+  assert(
+    eRevert.overrides.forcedCrash === null,
+    "custom mode is cleared immediately after its one round consumes it",
+  );
+  assert(
+    eRevert.overrides.winMode === "protect",
+    `overrides revert to the pre-Custom mode (got ${eRevert.overrides.winMode})`,
+  );
+  assert(
+    eRevert.overrides.customRevertTo === null,
+    "customRevertTo is cleared once consumed",
+  );
+
+  // The next round must NOT use the forced crash again — it should now
+  // follow the reverted mode (protect: crashes land in [1.00, 2.00]).
+  (eRevert as any).phase = "betting";
+  (eRevert as any).playerBets = [];
+  eRevert.placeBet("sock-revert-2", 0, 100);
+  (eRevert as any).lockRoundAndSelectCrash();
+  const secondCrash = (eRevert as any).crashPoint;
+  assert(
+    secondCrash >= 1.0 && secondCrash <= 2.0,
+    `next round follows the reverted Protect table instead of re-using the forced crash (got ${secondCrash})`,
+  );
+}
+{
+  // Defensive default: if customRevertTo was somehow never set (shouldn't
+  // happen via the admin API, but the engine shouldn't crash either way),
+  // Custom mode falls back to reverting to "normal" (Fair).
+  const eRevertDefault = new GameEngine();
+  eRevertDefault.overrides.forcedCrash = 4.0;
+  eRevertDefault.overrides.customRevertTo = null;
+  (eRevertDefault as any).phase = "betting";
+  (eRevertDefault as any).playerBets = [];
+  eRevertDefault.placeBet("sock-revert-3", 0, 100);
+  (eRevertDefault as any).lockRoundAndSelectCrash();
+  assert(
+    eRevertDefault.overrides.winMode === "normal",
+    `missing customRevertTo defaults to reverting to Fair/"normal" (got ${eRevertDefault.overrides.winMode})`,
+  );
+}
 
 // ── Fair Mode: sub-mode is picked from the engine's current reserve
 //    (bankroll), independent of bet amounts, whenever there's real stake. ──
@@ -254,6 +312,31 @@ assert(e.placeBet("sock-2", 0, 10) === false, "bet rejected during flight");
   assert(
     (e11 as any).roundMaxPayout === 205000,
     `roundMaxPayout = reserve + stake = 205000 (got ${(e11 as any).roundMaxPayout})`,
+  );
+}
+
+// Manual cash-out in a 25x custom round must settle well before the crash,
+// using the stable player identity rather than a transient transport id.
+{
+  const e12 = new GameEngine();
+  const playerId = "stable-browser-tab-12345678";
+  (e12 as any).phase = "betting";
+  e12.placeBet(playerId, 0, 100);
+  (e12 as any).phase = "flying";
+  (e12 as any).crashPoint = 25;
+  (e12 as any).roundStart = Date.now() - (Math.log(17) / 0.16) * 1000;
+  (e12 as any).economyActiveForRound = true;
+  (e12 as any).roundMaxPayout = 1_000_000;
+  (e12 as any).roundPaidOut = 0;
+  const result = e12.cashOut(playerId, 0);
+  assert(result !== null, "manual cashout at about 17x succeeds in a 25x custom round");
+  assert(
+    result !== null && result.cashedOutAt! >= 17 && result.cashedOutAt! < 25,
+    `manual cashout settles at the live multiplier before 25x (got ${result?.cashedOutAt})`,
+  );
+  assert(
+    e12.cashOutFailureReason("different-transport-id", 0) === "bet_not_found",
+    "a different transport identity is diagnosed as bet_not_found, not falsely reported as a missed round",
   );
 }
 

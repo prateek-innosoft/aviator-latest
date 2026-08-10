@@ -2,7 +2,7 @@
 
 > **Everything you need to know about how the game actually works today, how to operate the admin panel, and what to watch out for.**
 >
-> This guide was rewritten from scratch on 2026-07-13 against the live running code — the previous version described an older build (different currency, different mode system, a database that no longer exists) and should be disregarded.
+> This guide was last updated on 2026-07-16 against the live running code — it reflects the current four-mode crash system (Lure/Custom/Protect/Fair), the real-ledger Company Reserve, server-authoritative Auto Cash Out, and Custom mode's one-round auto-revert with explicit Set/Armed confirmation.
 
 ---
 
@@ -42,8 +42,9 @@ The crash point is genuinely unknown to everyone — including the admin — unt
 1. Type an amount or use a quick preset (10 / 20 / 50 / 100).
 2. Click **Bet** during the betting countdown. Your balance is debited immediately and the button becomes **Cancel**.
 3. If you click Bet while a round is already flying, your bet is **queued** for the next round instead — no money moves until the next betting window actually opens.
-4. Once flying starts, the button becomes **Cash Out** showing your live potential win. Click it any time before the crash.
+4. Once flying starts, the button becomes **Cash Out** showing your live potential win. Click it any time before the crash. While your click is in flight it shows **"Cashing Out…"** and disables — clicking again during that window is a no-op, not a second request.
 5. If the plane crashes before you cash out, the bet is lost — no partial refund.
+6. Crash points near 1.00x can resolve in well under a second (see §8) — if you click a moment too late, you'll see "Missed it — the round ended before your cash out went through." That's the server correctly rejecting a request that arrived after the round was already over, not a bug.
 
 **Cancel:** during the betting window (before flight starts) you can click Cancel to get a full, immediate refund. Once flying starts, a bet can only be resolved by cashing out or losing to the crash.
 
@@ -52,7 +53,7 @@ The crash point is genuinely unknown to everyone — including the admin — unt
 ## 3. Auto-Bet & Auto-Cashout
 
 - **Auto Bet** — switch a panel to the "auto" tab and enable it: the same amount is placed automatically every betting window, with no manual click needed.
-- **Auto Cash Out** — set a target multiplier and enable it: the panel cashes out by itself the instant the live multiplier reaches your target.
+- **Auto Cash Out** — set a target multiplier and enable it: the server itself cashes the bet out the instant its own authoritative multiplier reaches your target, inside its own tick loop — the same mechanism used to resolve the simulated crowd's cashout targets. There's no client round-trip involved in the decision, so it lands at your exact target (not a fraction over it from network latency) and can't miss a narrow window between the target and the crash the way a client-driven request can.
 - **Minimum auto-cashout target is 1.10x** — you cannot set a lower target than that.
 - The two combine naturally: auto-bet + auto-cashout runs the panel completely hands-off.
 
@@ -60,63 +61,51 @@ The crash point is genuinely unknown to everyone — including the admin — unt
 
 ## 4. Real Money vs. Demo Play
 
-- **Not logged in:** you're on a single **shared demo wallet** (starts at ₹50,000, shared by everyone who isn't logged in). It's real gameplay against the real round engine, just with play money.
-- **Logged in:** your bets debit and credit your own real wallet. Five test accounts are seeded for trying this out:
+There are no player accounts. Every visitor to the game page plays through a single **shared demo wallet** (`backend/src/store.ts`: `getDemoBalance`/`adjustDemoBalance`), starting at ₹50,000. It persists across reconnects and is only reset by a backend restart. This is real gameplay against the real round engine and the real crash logic — just with shared play money instead of a personal balance.
 
-  | Email | Password | Starting balance |
-  |---|---|---|
-  | tester1@aviator.local | Test@1234 | ₹10,00,000 |
-  | tester2@aviator.local | Test@1234 | ₹10,00,000 |
-  | tester3@aviator.local | Test@1234 | ₹10,00,000 |
-  | tester4@aviator.local | Test@1234 | ₹10,00,000 |
-  | tester5@aviator.local | Test@1234 | ₹10,00,000 |
+The admin panel (`/admin`) has its own separate login (`admin@aviator.com` / `admin123`, hardcoded) — unrelated to the player wallet.
 
-Both paths run through the exact same round engine and the exact same crash logic — demo play isn't rigged any differently than real-money play, it's just a shared balance instead of a personal one.
+> The codebase still contains an older per-user authenticated wallet path (`store.ts`: `placeBet`/`cancelBet`/`cashoutBet`, plus seeded `tester1-5@aviator.local` accounts), but it is currently unreachable — the player page no longer has a login flow that triggers it. It's left in place as the intended hook point: a host site integration would wire its own login into this path and swap `store.ts`'s function bodies for real DB/wallet calls (see §7).
 
 ---
 
 ## 5. Understanding the Economy (read this before touching Admin)
 
-The **Global Win Rate** setting has three modes. This is the single most important admin control — read this section fully before changing it on a live/real-money deployment.
+The game has four crash-selection modes, checked in this order every round:
 
-### Fair mode (default)
-Fair mode has **three sub-modes** that the server picks automatically, based on the company's current reserve — never based on who's betting or how much:
+1. **Lure** — if nobody placed a real bet this round, the crash is drawn from a wide "exciting" table regardless of admin mode. No real money is at risk, so this always wins over every other mode.
+2. **Custom** — the admin types an exact crash multiplier (1.00x-130.00x) and clicks **Set**; the next real-money round crashes there exactly. **One-shot**: the moment a round with real stake actually uses it, the server immediately clears it and reverts to whichever mode (Fair or Protect) was active right before Custom was chosen — automatically, no admin action needed. A round with zero real stake doesn't consume it (see Lure, above).
+3. **Protect** — a fixed, conservative table: 72% of rounds crash 1.00x-1.30x, 28% crash 1.30x-2.00x. A genuine random draw that never looks at bet amounts.
+4. **Fair** (default) — the sub-mode is picked purely from the current Company Reserve, never from who's betting or how much:
 
-| Reserve | Sub-mode used | Crash distribution |
-|---|---|---|
-| below ₹3,00,000 | **Tight** | 55% 1.00–1.10x · 25% 1.10–1.50x · 15% 1.50–2.00x · 4% 2.00–3.00x · 1% 3.00–5.00x |
-| ₹3,00,000 – ₹6,99,999 | **Normal** | 40% 1.00–1.30x · 39% 1.30–2.00x · 15% 2.00–4.00x · 4% 4.00–6.00x · 2% 6.00–10.00x |
-| ₹7,00,000 and above | **70% Normal / 30% Bonus** per round | Bonus: 30% 1.00–1.30x · 40% 1.30–2.50x · 15% 2.50–5.00x · 10% 5.00–10.00x · 5% 10.00–20.00x |
+| Reserve | Sub-mode |
+|---|---|
+| below ₹3,00,000 | Tight |
+| ₹3,00,000 – ₹6,99,999 | Normal |
+| ₹7,00,000 and above | 70% Normal / 30% Bonus per round |
 
-The currently-active sub-mode and live reserve figure are shown in the admin panel's Round Economy card whenever there's real money in play.
+There is no RTP formula anywhere in the code — these are the only four modes, and none of them ever inspect individual bet amounts.
 
-**Important — this is not a guaranteed "70% payout" formula.** These are fixed tables, not the mathematical RTP formula older documentation described. That means the *actual* percentage paid back to players over time depends on what multiplier targets your real players tend to pick — it is not locked to 70% the way a formula-based system would be. In a large simulated run with a realistic mixed population of players (see the Test & Simulation Report), the *realized* house take came out around **60–65%** of everything wagered — noticeably higher than a "30% house edge" framing would suggest. **Recalibrate the tier weights if you specifically need the take rate to land near a target percentage** — don't assume the current tables automatically produce it.
-
-### Protect mode
-A single, fixed, more conservative table, intended for a thin-reserve launch window: **70% 1.00–1.30x · 28% 1.30–2.00x · 2% 2.00–2.50x.** Still a genuine, disclosed random draw — it does not look at bet amounts either.
-
-### Custom mode
-Every round crashes at the exact multiplier you type in, no randomness at all. Use only for demos/testing — running real money on Custom mode means the outcome is 100% predetermined and identical for every player, every round.
-
-### The "Reserve" number is not the company's real profit total
-The reserve figure shown in the admin panel and used to pick Fair mode's sub-mode is a **deliberately bounded circuit-breaker sizing number** — capped at roughly 20× the average recent stake per round — not a running total of accumulated profit. In our large simulation, actual house profit reached crores of rupees while the displayed "reserve" stayed in the low lakhs the entire time, because it's capped by design. **Do not read the reserve number as "how much money has the house made" — it isn't that.** If you need a true lifetime profit/loss figure, that needs to be tracked separately (not built yet).
-
-One practical consequence: under realistic, moderate betting traffic, the reserve capping keeps it well under ₹7,00,000 almost permanently — **Bonus mode is very rarely reached in practice** unless bet sizes are consistently large. If you want Bonus mode to actually appear under normal traffic, lower the ₹7,00,000 threshold or change how the reserve is capped.
+### Company Reserve is a real ledger, not a capped number
+Every round with real money in play: `reserve += (real stake collected − amount paid out to winners)`, floored at 0. It also sets that round's payout ceiling: `maxPayout = reserve + this round's stake` — so a round can never mathematically pay out more than the house can cover. Admins can view the live value and set it directly (e.g. to withdraw profit or top it up) in the Company Reserve card — both the read-only live figure *and* the editable input field update automatically every round while the page is open; you don't need to refresh to see the current number, and the input won't let you accidentally overwrite recent growth with a stale value (it only stops tracking live updates while you're actively mid-edit).
 
 ---
 
 ## 6. Admin Panel Guide
 
-Go to `/admin` and sign in.
+Go to `/admin` and sign in with `admin@aviator.com` / `admin123` (hardcoded — see §7 on changing this before a real deployment).
 
-**Login:** `admin@aviator.com` / `admin123` (hardcoded — see §7 on changing this before a real deployment).
+Three cards:
 
-**What you can control, live, with immediate effect on the very next round:**
-- **Global Win Rate** — Fair / Protect / Custom (see §5).
-- **Round Economy** — enable/disable the economy engine, House Hold % / Max RTP % (these size the safety-ceiling circuit breaker, they no longer directly set the crash formula the way older docs described).
-- **Bet Limits** — min/max bet, enforced both in the UI and on the server (verified: a bet outside the range is rejected server-side even if someone bypasses the browser).
+- **Game Mode** — Fair / Protect / Custom (see §5).
+  - Fair and Protect apply automatically ~600ms after you click them — no separate "enable economy" toggle exists, Fair mode is simply the default.
+  - **Custom is different on purpose**: selecting the "Custom" tab only switches the view (shown **indigo**) — it does *not* arm anything by itself. Type the crash multiplier, then click **Set Custom Crash** to actually apply it. This was changed from an auto-save-as-you-type field specifically so a half-typed number (e.g. typing "9" on the way to "90") can never get committed and consumed by a round before you've finished — Custom mode is one-shot, so an accidental premature value would burn its one round on the wrong number.
+  - Once you click Set, you get **two explicit confirmations** — a toast ("Custom crash set to X× — applies to the next round with real bets, one time only") and the Custom button itself turns **amber with a pulsing "Armed" badge**, so it's unmistakable at a glance whether a value is just typed vs. genuinely live. The card's status line below also spells it out in words either way ("nothing is armed yet" vs. "Custom mode is ACTIVE: ... will crash at exactly X×").
+  - The whole panel updates itself live: once Custom's one round is consumed and the server reverts to Fair/Protect, the button color, the Armed badge, the status line, and the mode selector itself all snap back on their own — you'll see it without needing to refresh, even if you'd already edited something else on the page in the meantime.
+- **Company Reserve** — shows the live value, plus an input to set it directly (withdraw profit by lowering it, top it up by raising it). Both track live updates automatically (see §5).
+- **Round History** — shows the current in-progress round live (phase badge + live multiplier), not just rounds that have already finished, plus a scrollback of recent finished rounds.
 
-All changes save automatically ~600ms after you stop typing/clicking, and apply starting the very next round — confirmed live via direct testing, no restart needed.
+There's also a **Bet Limits** card (min/max bet, still auto-saves ~600ms after the last edit), enforced both in the UI and on the server — a bet outside the range is rejected server-side even if the browser is bypassed.
 
 ---
 
@@ -132,25 +121,35 @@ All changes save automatically ~600ms after you stop typing/clicking, and apply 
 
 ## 8. Known Limitations
 
-- **Reconnecting mid-round:** if a logged-in player's connection drops and reconnects while they have a bet in flight, they cannot cash out or cancel that specific bet from the new connection (verified directly). This is **not a money-safety issue** — the stake was already debited exactly once and the round resolves normally (the bet just can't be acted on, so it rides to the crash and is lost if not already won). The player's other future bets are unaffected. Worth fixing before a real launch if disconnects are common on your player base's networks.
-- **Demo wallet is shared** across every logged-out visitor — it is not per-browser or per-device. This is by design for testing, not appropriate for production as-is.
-- **Duplicate-panel-click safety:** clicking Cash Out twice in a row (or a flaky connection resending the click) is handled cleanly — the second attempt is rejected without affecting the round or double-paying. Verified directly.
+- **Sub-second rounds:** crash points near 1.00x-1.10x (common under Protect and Fair-Tight) resolve in well under a second — the flying phase lasts `ln(crash) / 0.16` seconds, so a 1.05x crash gives you roughly 300ms. That can be shorter than human reaction time plus network latency, and is the #1 cause of a manual (non-auto) Cash Out click landing just late enough to get rejected. This is an inherent characteristic of the current growth curve, not a bug — a minimum flying-duration floor would be the fix if it needs addressing. Auto Cash Out (§3) isn't affected by this — it's resolved server-side, not by a client click.
+- **Network delay still exists, but the UI compensates for it:** the displayed multiplier is synchronized to the backend's clock instead of replaying delayed socket ticks. Each browser tab also keeps a stable player identity across Socket.IO reconnects, so a brief transport drop no longer makes that tab's live bet unreachable for cancel or cash-out.
+- **Demo wallet is shared** across every visitor — not per-browser or per-device. By design for testing, not appropriate for production as-is.
+- **Dev-only WebSocket proxy hiccups:** in local dev, both the admin page and the player page tunnel through Vite's dev-server WebSocket proxy before reaching the backend — closing or refreshing one tab can occasionally knock the other's connection loose (visible as `ws proxy error: ECONNRESET` in the dev server log). The client reconnects fast enough (~250ms) that this shouldn't be visible in normal use, but it's a dev-environment artifact either way — a real deployment serves the frontend as static files with the socket connecting directly to the backend, no proxy in the path.
 
 ---
 
 ## 9. Common Questions
 
 **Is the crash point rigged per player or per bet size?**
-No — verified directly in code and by testing. The crash point is drawn before anyone's individual cash-out behavior is known, and none of the three modes look at bet amounts to pick or adjust the outcome. Fair mode's sub-mode selection uses only the reserve total, never who's betting.
+No — verified directly in code and by testing. The crash point is drawn before anyone's individual cash-out behavior is known, and none of the four modes look at bet amounts to pick or adjust the outcome. Fair mode's sub-mode selection uses only the reserve total, never who's betting.
 
 **What happens if the server restarts mid-round?**
 The round in progress is lost along with all in-memory state (see §7). This is a real operational gap for anything beyond testing.
 
 **Can I verify a bet actually credited?**
-Yes — every wallet operation (bet, cancel, cashout) goes through `store.ts`'s atomic in-memory functions and was directly tested for exact debit/credit correctness, including that duplicate operations are rejected without double-spending or double-crediting.
+Yes — every wallet operation (bet, cancel, cashout) goes through `store.ts`'s atomic in-memory functions, verified directly for exact debit/credit correctness including rejection of duplicate operations.
 
-**What's the real house take right now?**
-See the accompanying Test & Simulation Report — short version: very profitable, but not calibrated to a clean "70/30" split the way the underlying formula-based system used to be. Recalibrate the Fair-mode tier tables if you need a specific target percentage.
+**Is there still an RTP formula or house-edge percentage setting?**
+No — it was fully removed. The four modes in §5 (Lure/Custom/Protect/Fair) are the entire crash-selection system now; there's no separate return-to-player calculation layered on top.
+
+**I set Custom mode and it's gone the next time I check the admin panel — is that a bug?**
+No, that's the intended one-shot behavior (§5/§6). Once a round with real money actually uses your Custom crash value, it auto-reverts — the button drops its amber "Armed" look and the selector highlights whichever of Fair/Protect was active before, automatically. If it reverted before you expected, check whether real bets were already active when you clicked Set — with continuous real betting traffic, the very next round can lock (and consume it) within a second or two of you setting it.
+
+**Why doesn't the Custom crash field save as I type anymore?**
+That was changed deliberately: typing now only edits a local draft — nothing is sent to the server until you click **Set Custom Crash**. This prevents a half-typed number from being committed and burning Custom mode's one round on the wrong value.
+
+**How do I tell whether Custom mode is actually armed, versus just being looked at?**
+Color and a badge, not just text: indigo with no badge means the tab is open but nothing is set; **amber with a pulsing "Armed" badge** means a value is genuinely live and will be used on the next real-money round. The status line under the mode buttons also states it explicitly either way.
 
 ---
 

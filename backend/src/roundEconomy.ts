@@ -38,13 +38,13 @@ export const DEFAULT_CRASH_TIERS: CrashTier[] = [
  * pulls the long-run average far above the real modes. Sums to 100.
  */
 export const NO_BET_LURE_TIERS: CrashTier[] = [
-  { lo: 1.00, hi: 1.99, weight: 20 },
-  { lo: 2.00, hi: 2.99, weight: 20 },
-  { lo: 3.00, hi: 4.99, weight: 20 },
-  { lo: 5.00, hi: 9.99, weight: 15 },
-  { lo: 10.00, hi: 19.99, weight: 10 },
-  { lo: 20.00, hi: 49.99, weight: 10 },
-  { lo: 50.00, hi: 100.00, weight: 5 },
+  { lo: 1.00, hi: 1.99, weight: 30 },
+  { lo: 2.00, hi: 2.99, weight: 30 },
+  { lo: 3.00, hi: 4.99, weight: 10 },
+  { lo: 5.00, hi: 9.99, weight: 10 },
+  { lo: 10.00, hi: 19.99, weight: 5 },
+  { lo: 20.00, hi: 49.99, weight: 5 },
+  { lo: 50.00, hi: 100.00, weight: 10 },
 ];
 
 /**

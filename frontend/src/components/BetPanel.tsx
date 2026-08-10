@@ -4,7 +4,7 @@ import { useGame } from "../store/gameStore";
 import { fmt } from "../lib/format";
 
 /** Fixed quick-pick amounts — enabled only when ≥ admin min bet. */
-const BET_PRESETS = [10, 20, 50, 100];
+const BET_PRESETS = [100, 1000, 5000, 50000];
 
 export function BetPanel({
   index,
@@ -125,7 +125,9 @@ export function BetPanel({
   };
 
   const disabled =
-    action === "waiting" || (action === "bet" && (insufficient || autoLocked));
+    action === "waiting" ||
+    (action === "cashout" && panel.cashOutPending) ||
+    (action === "bet" && (insufficient || autoLocked));
 
   return (
     <div
@@ -259,12 +261,21 @@ export function BetPanel({
           }`}
         >
           {action === "cashout" ? (
-            <>
-              <span className="text-[17px] sm:text-[18px]">Cash Out</span>
-              <span className="text-[15px] sm:text-[16px]">
-                {fmt(potentialWin)} INR
+            panel.cashOutPending ? (
+              <span className="flex items-center gap-1 text-[15px]">
+                Cashing Out
+                <span className="loading-dot">.</span>
+                <span className="loading-dot" style={{ animationDelay: "0.2s" }}>.</span>
+                <span className="loading-dot" style={{ animationDelay: "0.4s" }}>.</span>
               </span>
-            </>
+            ) : (
+              <>
+                <span className="text-[17px] sm:text-[18px]">Cash Out</span>
+                <span className="text-[15px] sm:text-[16px]">
+                  {fmt(potentialWin)} INR
+                </span>
+              </>
+            )
           ) : action === "cancel" ? (
             <>
               <span className="text-[17px] sm:text-[18px]">Cancel</span>

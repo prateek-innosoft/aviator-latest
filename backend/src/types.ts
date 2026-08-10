@@ -32,24 +32,35 @@ export interface PublicRoundState {
   bets: LiveBet[];
   totalBets: number;
   totalWin: number;
+  /** Server wall-clock timestamp when the current flight began. */
+  flightStartedAt: number | null;
 }
 
 export interface PlaceBetPayload {
   panel: 0 | 1;
   amount: number;
+  /** Stable browser-tab identity; survives Socket.IO reconnects mid-round. */
+  clientId?: string;
   /** Authenticated user id — required for wallet operations. */
   userId?: string;
+  /** If set, the server resolves cash-out itself the instant the live
+   * multiplier reaches this value — exact, no client round-trip needed. */
+  autoCashOutTarget?: number | null;
 }
 
 export interface CancelBetPayload {
   panel: 0 | 1;
   amount: number;
+  /** Stable browser-tab identity; survives Socket.IO reconnects mid-round. */
+  clientId?: string;
   /** Authenticated user id — required for wallet operations. */
   userId?: string;
 }
 
 export interface CashOutPayload {
   panel: 0 | 1;
+  /** Stable browser-tab identity; survives Socket.IO reconnects mid-round. */
+  clientId?: string;
   /** Authenticated user id — required for wallet operations. */
   userId?: string;
 }

@@ -111,9 +111,10 @@ export function AdminLogin({ onLogin }: { onLogin: () => void }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // NumStepper — ▼ value ▲
 // ─────────────────────────────────────────────────────────────────────────────
-function NumStepper({ label, value, onChange, min = 1, max = 100, step = 1, suffix = "R", testId }: {
+function NumStepper({ label, value, onChange, min = 1, max = 100, step = 1, suffix = "R", testId, onFocus, onBlur }: {
   label: string; value: string; onChange: (v: string) => void;
   min?: number; max?: number; step?: number; suffix?: string; testId?: string;
+  onFocus?: () => void; onBlur?: () => void;
 }) {
   const nudge = (dir: 1 | -1) => {
     const next = Math.max(min, Math.min(max, +(+value + step * dir).toFixed(2)));
@@ -130,10 +131,12 @@ function NumStepper({ label, value, onChange, min = 1, max = 100, step = 1, suff
         <div className="flex flex-1 items-center justify-center gap-0.5">
           <input type="number" value={value} min={min} max={max} step={step}
             data-testid={`stepper-${tid}-input`}
+            onFocus={onFocus}
             onChange={e => onChange(e.target.value)}
             onBlur={() => {
               const n = Number(value);
               if (value === "" || !Number.isFinite(n)) onChange(String(min));
+              onBlur?.();
             }}
             className="w-full bg-transparent text-center text-[15px] font-bold text-gray-800 outline-none tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
           <span className="text-[11px] font-semibold text-gray-400">{suffix}</span>
@@ -278,10 +281,26 @@ export function RateControlPanel({ token }: { token: string }) {
   const [toast, setToast]                 = useState<Toast>(null);
   const [reserveInput, setReserveInput]   = useState("200000");
   const [reserveSaving, setReserveSaving] = useState(false);
+  // The crash value actually armed on the server right now — null when
+  // Custom mode isn't active. Deliberately separate from `customCrash`
+  // (the editable draft in the input box): typing must never look like it
+  // already took effect before Set is clicked.
+  const [activeCustomCrash, setActiveCustomCrash] = useState<number | null>(null);
+  const [customCrashSaving, setCustomCrashSaving] = useState(false);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commitSeqRef = useRef(0);
   const dirtyRef = useRef(false);
+  // True while the admin is actively editing the reserve input — pauses the
+  // live socket sync below so an in-progress edit doesn't get overwritten
+  // out from under them.
+  const reserveDirtyRef = useRef(false);
+  // True only while the admin is actively typing an un-set custom crash
+  // value. Deliberately separate from dirtyRef (which stays true forever
+  // after the admin's first edit anywhere on this page, until Refresh) —
+  // the mode selector needs to keep reflecting Custom mode's automatic
+  // one-round revert live regardless of unrelated edits elsewhere.
+  const customEditingRef = useRef(false);
   const show = (msg: string, ok: boolean) => { setToast({ msg, ok }); setTimeout(() => setToast(null), 2200); };
 
   const load = useCallback(async (force = false) => {
@@ -289,6 +308,8 @@ export function RateControlPanel({ token }: { token: string }) {
     setLoading(true);
     try {
       const { controls } = await adminApi.getControls(token);
+      // Status, not draft — always reflect the truth regardless of dirtyRef.
+      setActiveCustomCrash(controls.forced_crash);
       if (force || !dirtyRef.current) {
         setMinBet(String(controls.min_bet));
         setMaxBet(String(controls.max_bet));
@@ -296,7 +317,9 @@ export function RateControlPanel({ token }: { token: string }) {
           controls.forced_crash != null ? "custom" :
           controls.win_mode === "protect" ? "protect" : "fair",
         );
-        if (controls.forced_crash != null) setCustomCrash(String(controls.forced_crash));
+        if (controls.forced_crash != null && !customEditingRef.current) {
+          setCustomCrash(String(controls.forced_crash));
+        }
       }
     } catch (e: unknown) {
       show(e instanceof Error ? e.message : "Load failed", false);
@@ -322,6 +345,7 @@ export function RateControlPanel({ token }: { token: string }) {
     setReserveSaving(true);
     try {
       const { reserve } = await adminApi.setReserve(token, amount);
+      reserveDirtyRef.current = false;
       setReserveInput(String(reserve));
       show(`Reserve set to ${adminFmt.fmt(reserve)}`, true);
     } catch (e: unknown) {
@@ -332,9 +356,39 @@ export function RateControlPanel({ token }: { token: string }) {
   }, [token, reserveInput]);
 
   useEffect(() => {
-    const onEcon = (p: AdminRoundEconomyEvent) => setLiveEconomy(p);
+    const onEcon = (p: AdminRoundEconomyEvent) => {
+      setLiveEconomy(p);
+      // Keep the editable reserve field live too — it used to only load once
+      // on mount, so it silently went stale while the page sat open, and
+      // clicking "Set" with that stale number would wipe out real reserve
+      // growth that happened since. Skip the sync while the admin is
+      // actively editing it themselves.
+      if (!reserveDirtyRef.current) setReserveInput(String(p.reserve));
+    };
     socket.on("admin:roundEconomy", onEcon);
     return () => { socket.off("admin:roundEconomy", onEcon); };
+  }, []);
+
+  useEffect(() => {
+    // Custom mode auto-reverts server-side after its one round (see
+    // gameEngine.ts). Pick that reversion up live so the Game Mode selector
+    // snaps back to Fair/Protect on its own, instead of continuing to show
+    // "Custom" for a mode that's no longer actually active. Gated only by
+    // customEditingRef (not the page-wide dirtyRef) — an edit to bet limits
+    // or an earlier mode click must not permanently block this from then on.
+    const onControls = (p: { win_mode: "normal" | "protect"; forced_crash: number | null }) => {
+      // Status, not draft — always reflect the truth so the panel can never
+      // claim a value is active when the server has already reverted it.
+      setActiveCustomCrash(p.forced_crash);
+      if (customEditingRef.current) return;
+      setCrashMode(
+        p.forced_crash != null ? "custom" :
+        p.win_mode === "protect" ? "protect" : "fair",
+      );
+      if (p.forced_crash != null) setCustomCrash(String(p.forced_crash));
+    };
+    socket.on("admin:controls", onControls);
+    return () => { socket.off("admin:controls", onControls); };
   }, []);
 
   const commit = useCallback(async (
@@ -391,8 +445,39 @@ export function RateControlPanel({ token }: { token: string }) {
     debounceRef.current = setTimeout(() => commit(mode, customC, minB, maxB), 600);
   };
 
-  const handleMode        = (m: "fair" | "protect" | "custom") => { setCrashMode(m); schedule(m, customCrash, minBet, maxBet); };
-  const handleCustomCrash = (v: string) => { setCustomCrash(v); schedule("custom", v, minBet, maxBet); };
+  const handleMode = (m: "fair" | "protect" | "custom") => {
+    setCrashMode(m);
+    if (m === "custom") {
+      // Only switch the view. Selecting the Custom tab must never by itself
+      // arm a forced crash — that only happens when the admin explicitly
+      // clicks Set below, with the value they actually typed.
+      customEditingRef.current = true;
+      return;
+    }
+    customEditingRef.current = false;
+    schedule(m, customCrash, minBet, maxBet);
+  };
+  const handleCustomCrash = (v: string) => { customEditingRef.current = true; setCustomCrash(v); };
+  const commitCustomCrash = useCallback(async () => {
+    const c = Number(customCrash);
+    if (!Number.isFinite(c) || c < 1 || c > 130) {
+      show("Custom crash must be between 1.00× and 130.00×", false);
+      return;
+    }
+    const forced = Math.round(c * 100) / 100;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    customEditingRef.current = false;
+    setCustomCrashSaving(true);
+    try {
+      const { controls } = await adminApi.patchControls(token, { forced_crash: forced });
+      setActiveCustomCrash(controls.forced_crash);
+      show(`Custom crash set to ${forced.toFixed(2)}× — applies to the next round with real bets, one time only`, true);
+    } catch (e: unknown) {
+      show(e instanceof Error ? e.message : "Failed to set custom crash", false);
+    } finally {
+      setCustomCrashSaving(false);
+    }
+  }, [token, customCrash]);
   const handleMinBet = (v: string) => { setMinBet(v);  schedule(crashMode, customCrash, v, maxBet); };
   const handleMaxBet = (v: string) => { setMaxBet(v);  schedule(crashMode, customCrash, minBet, v); };
 
@@ -498,24 +583,48 @@ export function RateControlPanel({ token }: { token: string }) {
               </div>
             </button>
 
-            {/* Custom */}
+            {/* Custom — amber + pulsing "ARMED" badge once a value is actually
+                set and waiting for its one round; indigo while just viewing/
+                editing the tab with nothing armed yet; plain gray again the
+                instant it lands and auto-reverts. */}
             <button
               onClick={() => handleMode("custom")}
               data-testid="mode-custom"
-              className={`flex flex-col items-center gap-2 rounded-2xl border-2 p-5 transition ${
-                crashMode === "custom"
+              className={`relative flex flex-col items-center gap-2 rounded-2xl border-2 p-5 transition ${
+                crashMode === "custom" && activeCustomCrash != null
+                  ? "border-amber-400 bg-amber-50"
+                  : crashMode === "custom"
                   ? "border-indigo-400 bg-indigo-50"
                   : "border-gray-200 bg-white hover:border-gray-300"
               }`}>
+              {crashMode === "custom" && activeCustomCrash != null && (
+                <span
+                  data-testid="mode-custom-armed-badge"
+                  className="absolute -top-2 right-2 flex items-center gap-1 rounded-full bg-amber-500 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-white shadow"
+                >
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                  Armed
+                </span>
+              )}
               <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${
-                crashMode === "custom" ? "bg-indigo-500 text-white" : "bg-gray-100 text-gray-400"
+                crashMode === "custom" && activeCustomCrash != null
+                  ? "bg-amber-500 text-white"
+                  : crashMode === "custom"
+                  ? "bg-indigo-500 text-white"
+                  : "bg-gray-100 text-gray-400"
               }`}>
                 <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2.5">
                   <path d="M12 20V10M12 4v.01M6 20v-6M18 20V8" />
                 </svg>
               </div>
               <div className="text-center">
-                <div className={`text-[14px] font-black ${crashMode === "custom" ? "text-indigo-600" : "text-gray-400"}`}>Custom</div>
+                <div className={`text-[14px] font-black ${
+                  crashMode === "custom" && activeCustomCrash != null
+                    ? "text-amber-600"
+                    : crashMode === "custom"
+                    ? "text-indigo-600"
+                    : "text-gray-400"
+                }`}>Custom</div>
                 <div className="mt-0.5 text-[11px] text-gray-400">Fixed crash you set</div>
               </div>
             </button>
@@ -528,17 +637,35 @@ export function RateControlPanel({ token }: { token: string }) {
                 label="Custom crash multiplier"
                 value={customCrash}
                 onChange={handleCustomCrash}
+                onFocus={() => { customEditingRef.current = true; }}
+                onBlur={() => { customEditingRef.current = false; }}
                 min={1}
                 max={130}
                 step={0.1}
                 suffix="×"
               />
+              <button
+                onClick={commitCustomCrash}
+                disabled={customCrashSaving}
+                data-testid="customcrash-set"
+                className="mt-2 w-full rounded-lg bg-gray-900 px-4 py-2 text-[12px] font-bold text-white transition hover:bg-gray-700 disabled:opacity-50"
+              >
+                {customCrashSaving ? "Setting…" : "Set Custom Crash"}
+              </button>
+              <p className="mt-1.5 text-[11px] text-gray-400">
+                {Number(customCrash) !== activeCustomCrash
+                  ? `Not applied yet — click Set to arm ${Number(customCrash || 0).toFixed(2)}×.`
+                  : "This value is already the active one."}
+                {" "}Applies starting the next round, for that one round only — then automatically reverts to whichever mode was active before Custom.
+              </p>
             </div>
           )}
 
-          <div className="mt-4 rounded-xl bg-gray-50 px-4 py-3 text-[12px] leading-relaxed text-gray-500">
+          <div className="mt-4 rounded-xl bg-gray-50 px-4 py-3 text-[12px] leading-relaxed text-gray-500" data-testid="mode-status">
             {crashMode === "custom"
-              ? `Every round (with real bets) crashes at exactly ${Number(customCrash || 0).toFixed(2)}× (1×–130×).`
+              ? activeCustomCrash != null
+                ? `Custom mode is ACTIVE: the next round with real bets will crash at exactly ${activeCustomCrash.toFixed(2)}× (one time only, then auto-reverts).`
+                : "Custom mode selected, but nothing is armed yet — type a value above and click Set Custom Crash to apply it."
               : crashMode === "protect"
               ? "Protect Mode — a fixed, conservative table for thin-reserve periods: 72% of rounds crash 1.00×–1.30×, 28% crash 1.30×–2.00×. A genuine random draw with no knowledge of bet amounts."
               : "Fair Mode — the crash table is picked by the company reserve below: Tight (reserve < ₹3L), Normal (₹3L–₹7L), or a 70/30 Normal/Bonus mix (reserve ≥ ₹7L). Uniform for every player, never based on bet amounts."}
@@ -576,7 +703,9 @@ export function RateControlPanel({ token }: { token: string }) {
               type="number"
               min={0}
               value={reserveInput}
-              onChange={(e) => setReserveInput(e.target.value)}
+              onFocus={() => { reserveDirtyRef.current = true; }}
+              onChange={(e) => { reserveDirtyRef.current = true; setReserveInput(e.target.value); }}
+              onBlur={() => { reserveDirtyRef.current = false; }}
               data-testid="reserve-input"
               className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[15px] font-bold text-gray-900 outline-none tabular-nums focus:border-gray-400"
             />

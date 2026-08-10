@@ -4,6 +4,7 @@ import { crashPointFromSeed, generateSeed } from "./provablyFair.js";
 import { generateBots } from "./fakeBets.js";
 import * as store from "./store.js";
 import { loadAdminControls as fetchAdminControls, applyControlsToEngine } from "./adminControls.js";
+import { loadReserve, saveReserve } from "./reserveStore.js";
 import {
   fairTiersFor,
   generateWeightedCrash,
@@ -39,6 +40,8 @@ export interface AdminOverrides {
   forcedCrash: number | null;
   minBet:      number;
   maxBet:      number;
+  /** Mode to auto-revert to once Custom mode's one round is consumed. */
+  customRevertTo: WinMode | null;
 }
 
 export interface RoundEconomyState {
@@ -61,6 +64,12 @@ export interface PlayerBet {
   cashedOut: boolean;
   cashedOutAt: number | null;
   win: number | null;
+  /** If set, the tick loop cashes this out itself the instant the live
+   * multiplier reaches it — same mechanism as bot targets, exact and with
+   * no client round-trip latency. Null when auto cash-out wasn't enabled. */
+  autoCashOutTarget: number | null;
+  /** CasinoTransaction id from the platform backend, for authenticated bets. Null for demo bets. */
+  betId: string | null;
 }
 
 function round2(n: number): number {
@@ -101,13 +110,14 @@ export class GameEngine extends EventEmitter {
    * never go negative through play. Drives Fair Mode's Tight/Normal/Bonus
    * selection. Starts at ₹2,00,000; in-memory only (resets on restart).
    */
-  private bankroll = INITIAL_BANKROLL_INR;
+  private bankroll = loadReserve() ?? INITIAL_BANKROLL_INR;
 
   overrides: AdminOverrides = {
     winMode:     "normal",
     forcedCrash: null,
     minBet:      1,
     maxBet:      50000,
+    customRevertTo: null,
   };
 
   setWinMode(m: WinMode)           { this.overrides.winMode = m; }
@@ -129,6 +139,7 @@ export class GameEngine extends EventEmitter {
    */
   setBankroll(amount: number): void {
     this.bankroll = Math.max(0, Math.round(amount * 100) / 100);
+    saveReserve(this.bankroll);
   }
 
   getPlayerBet(socketId: string, panel: 0 | 1): PlayerBet | null {
@@ -194,6 +205,7 @@ export class GameEngine extends EventEmitter {
     if (!this.economyActiveForRound) return;
     const net = round2(this.roundRealStake - this.roundPaidOut);
     this.bankroll = Math.max(0, round2(this.bankroll + net));
+    saveReserve(this.bankroll);
   }
 
   emitRoundEconomics(): void {
@@ -241,11 +253,19 @@ export class GameEngine extends EventEmitter {
     this.roundMaxPayout = round2(this.bankroll + this.roundRealStake);
     this.economyActiveForRound = true;
 
-    // 2. Custom mode: honor the admin's exact fixed crash.
+    // 2. Custom mode: honor the admin's exact fixed crash. One-shot — this
+    //    round is the one round Custom mode gets, so consume it immediately:
+    //    the very next round already reverts to whatever mode was active
+    //    before Custom was chosen, no manual admin action required.
     if (this.overrides.forcedCrash !== null) {
       this.crashPoint = round2(Math.min(this.overrides.forcedCrash, HARD_CAP_MULTIPLIER));
       this.fairSubMode = null;
       console.log(`[Economy][custom] stake=${this.roundRealStake} crash=${this.crashPoint}`);
+      const revertTo = this.overrides.customRevertTo ?? "normal";
+      this.overrides.forcedCrash = null;
+      this.overrides.winMode = revertTo;
+      this.overrides.customRevertTo = null;
+      this.emit("admin:customModeConsumed", { winMode: revertTo });
       return;
     }
 
@@ -394,6 +414,7 @@ export class GameEngine extends EventEmitter {
       if (rawMultiplier >= this.crashPoint) {
         this.multiplier = this.crashPoint;
         this.resolveBots(true);
+        this.emitAutoCashouts();
         const bets = this.allBets();
         this.emit("tick:multiplier", {
           multiplier: this.multiplier,
@@ -405,6 +426,7 @@ export class GameEngine extends EventEmitter {
       }
 
       this.resolveBots(false);
+      this.emitAutoCashouts();
       const bets = this.allBets();
       this.emit("tick:multiplier", {
         multiplier: this.multiplier,
@@ -412,6 +434,31 @@ export class GameEngine extends EventEmitter {
         totalWin: this.sumTotalWin(),
       });
     }, TICK_MS);
+  }
+
+  /**
+   * Same mechanism as resolveBots(), but for real players who enabled Auto
+   * Cash Out: resolved server-side, in-tick, against the authoritative
+   * multiplier — no client round-trip, so it can't overshoot the target due
+   * to network latency and can't miss a narrow window between the target
+   * and the crash point the way a client-driven emit-and-wait cycle can.
+   * Emits "playerBet:autoCashedOut" per resolved bet so index.ts can credit
+   * the wallet and notify that one socket.
+   */
+  private emitAutoCashouts(): void {
+    for (const bet of this.playerBets) {
+      if (bet.cashedOut) continue;
+      if (bet.autoCashOutTarget == null) continue;
+      if (bet.autoCashOutTarget > this.multiplier) continue;
+      if (bet.autoCashOutTarget >= this.crashPoint) continue;
+      const win = round2(bet.amount * bet.autoCashOutTarget);
+      if (this.wouldExceedBudget(win)) continue;
+      bet.cashedOut = true;
+      bet.cashedOutAt = bet.autoCashOutTarget;
+      bet.win = win;
+      if (this.economyActiveForRound) this.recordPaidOut(win);
+      this.emit("playerBet:autoCashedOut", { ...bet });
+    }
   }
 
   forceCrashNow(): void {
@@ -468,7 +515,14 @@ export class GameEngine extends EventEmitter {
     }
   }
 
-  placeBet(socketId: string, panel: 0 | 1, amount: number, userId?: string): boolean {
+  placeBet(
+    socketId: string,
+    panel: 0 | 1,
+    amount: number,
+    userId?: string,
+    autoCashOutTarget?: number | null,
+    betId?: string,
+  ): boolean {
     if (this.phase !== "betting") return false;
     if (amount <= 0) return false;
     if (amount < this.overrides.minBet) return false;
@@ -485,6 +539,8 @@ export class GameEngine extends EventEmitter {
       cashedOut: false,
       cashedOutAt: null,
       win: null,
+      autoCashOutTarget: autoCashOutTarget ?? null,
+      betId: betId ?? null,
     });
     return true;
   }
@@ -518,6 +574,21 @@ export class GameEngine extends EventEmitter {
   getLiveMultiplier(): number {
     if (this.phase !== "flying") return this.multiplier;
     return Math.floor(Math.min(this.liveRawMultiplier(), this.crashPoint) * 100) / 100;
+  }
+
+  cashOutFailureReason(
+    socketId: string,
+    panel: 0 | 1,
+  ): "round_ended" | "bet_not_found" | "already_cashed_out" | "budget_exhausted" | "rejected" {
+    if (this.phase !== "flying" || this.crashing || this.liveRawMultiplier() >= this.crashPoint) {
+      return "round_ended";
+    }
+    const bet = this.playerBets.find((b) => b.socketId === socketId && b.panel === panel);
+    if (!bet) return "bet_not_found";
+    if (bet.cashedOut) return "already_cashed_out";
+    const multiplier = Math.floor(this.liveRawMultiplier() * 100) / 100;
+    if (this.wouldExceedBudget(round2(bet.amount * multiplier))) return "budget_exhausted";
+    return "rejected";
   }
 
   cashOut(socketId: string, panel: 0 | 1): PlayerBet | null {
@@ -583,6 +654,7 @@ export class GameEngine extends EventEmitter {
       bets,
       totalBets: bets.length,
       totalWin: round2(totalWin),
+      flightStartedAt: this.phase === "flying" ? this.roundStart : null,
     };
   }
 

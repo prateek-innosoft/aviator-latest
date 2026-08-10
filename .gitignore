@@ -20,6 +20,10 @@ npm-debug.log*
 !.env.example
 share-link.url
 
+# Persisted company reserve ledger — per-deployment runtime state.
+backend/reserve.json
+backend/admin-controls.json
+
 # OS / editor cruft
 .DS_Store
 
