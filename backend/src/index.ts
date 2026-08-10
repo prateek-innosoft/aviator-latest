@@ -28,6 +28,15 @@ function lanIpv4(): string[] {
 
 const app = express();
 
+// Behind a reverse proxy (nginx, pm2 + nginx, cloudflare tunnel, etc.) in
+// staging/prod, Express must be told to trust X-Forwarded-For or
+// express-rate-limit can't safely derive a per-client key and throws
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request. TRUST_PROXY sets the
+// hop count (how many proxies sit in front of this process); defaults to 0
+// (untrusted) for local dev where there's no proxy.
+const trustProxy = Number(process.env.TRUST_PROXY ?? 0);
+if (trustProxy > 0) app.set("trust proxy", trustProxy);
+
 // Security headers
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
