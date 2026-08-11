@@ -452,7 +452,10 @@ export const useGame = create<GameState>((set, get) => ({
       // Balance stays as the server reported it; just clear the panel state.
       get().setPanel(p.panel, { active: false, queued: false });
       // No toast for phase/duplicate — these are expected during normal play.
-      const silentReasons = ["phase", "duplicate"];
+      // No toast for session_expired either — the "auth:failed" handler already
+      // shows a clear message for that; a second toast here would just repeat it
+      // with the confusing raw upstream reason instead.
+      const silentReasons = ["phase", "duplicate", "session_expired"];
       if (p.reason && silentReasons.includes(p.reason)) return;
       // Show user-friendly toast for actionable rejections only.
       const reasonMessages: Record<string, string> = {

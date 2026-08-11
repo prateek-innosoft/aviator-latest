@@ -4,11 +4,12 @@ import os from "node:os";
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
-import { Server } from "socket.io";
+import { Server, type Socket } from "socket.io";
 import { GameEngine } from "./gameEngine.js";
 import * as store from "./store.js";
 import { authRouter } from "./authRouter.js";
 import { nestGet, nestPost } from "./nestClient.js";
+import type { NestResult } from "./nestClient.js";
 import { saveAdminControls } from "./adminControls.js";
 import type { WinMode } from "./gameEngine.js";
 import type { CancelBetPayload, CashOutPayload, PlaceBetPayload } from "./types.js";
@@ -133,6 +134,27 @@ const authedSockets = new Map<string, { userId: string; token: string }>();
 // must NOT fall through to the demo wallet, or a real-money player would
 // silently end up playing with fake balance and no platform transaction.
 const authFailedSockets = new Set<string>();
+
+// The platform's game-session JWT is short-lived (SPINFORGE_GAME_SESSION_EXPIRY).
+// A long-running authenticated action — most commonly Auto Bet / Auto Cash Out,
+// which is designed to keep firing unattended — can outlive it mid-session.
+// AviatorSessionGuard rejects the stale token with 401 "Invalid or expired game
+// session" on every subsequent platform call, which otherwise just leaked
+// through as the raw NestJS error text on whatever action happened to hit it
+// next (a confusing message for a session problem, not a bet problem). Detect
+// it at the root — any 401 from an authenticated platform call — deauth the
+// socket immediately so it falls back to demo mode instead of repeatedly
+// retrying with a token that will never become valid again.
+function isSessionExpired(result: NestResult<unknown>): boolean {
+  return result.status === 401;
+}
+
+function deauthOnSessionExpiry(socket: Socket, result: NestResult<unknown>) {
+  console.error(`[session] game session token expired/invalid for socket=${socket.id}: ${result.reason}`);
+  authedSockets.delete(socket.id);
+  authFailedSockets.add(socket.id);
+  socket.emit("auth:failed", { reason: "session_expired" });
+}
 
 function broadcast(event: string, payload: unknown) {
   io.emit(event, payload);
@@ -288,6 +310,11 @@ io.on("connection", async (socket) => {
           { roundId: engine.roundRecordId, panel, amount },
         );
         if (!result.ok || !result.data?.data) {
+          if (isSessionExpired(result)) {
+            deauthOnSessionExpiry(socket, result);
+            socket.emit("bet:rejected", { panel, reason: "session_expired" });
+            return;
+          }
           socket.emit("bet:rejected", { panel, reason: result.reason ?? "rejected" });
           return;
         }
@@ -353,6 +380,9 @@ io.on("connection", async (socket) => {
       );
       if (result.ok && result.data?.data) {
         socket.emit("bet:cancelled", { panel, balance: result.data.data.balance });
+      } else if (isSessionExpired(result)) {
+        deauthOnSessionExpiry(socket, result);
+        socket.emit("bet:cancel_failed", { panel, reason: "session_expired" });
       } else {
         socket.emit("bet:cancel_failed", { panel, reason: "server_error" });
       }
@@ -398,6 +428,11 @@ io.on("connection", async (socket) => {
         { roundId: engine.roundRecordId, panel, betId: bet.betId },
       );
       if (!result.ok || !result.data?.data) {
+        if (isSessionExpired(result)) {
+          deauthOnSessionExpiry(socket, result);
+          socket.emit("bet:cancel_failed", { panel, reason: "session_expired" });
+          return;
+        }
         socket.emit("bet:cancel_failed", { panel, reason: result.reason ?? "server_error" });
         return;
       }
@@ -459,6 +494,11 @@ io.on("connection", async (socket) => {
 
       if (!result.ok || !result.data?.data) {
         engine.undoCashOut(ownerId, panel);
+        if (isSessionExpired(result)) {
+          deauthOnSessionExpiry(socket, result);
+          socket.emit("bet:cashout_failed", { panel, reason: "session_expired" });
+          return;
+        }
         if (result.reason === "budget_exhausted") {
           engine.forceCrashNow();
         }
