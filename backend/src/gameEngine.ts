@@ -9,7 +9,6 @@ import {
   fairTiersFor,
   generateWeightedCrash,
   HARD_CAP_MULTIPLIER,
-  NO_BET_LURE_TIERS,
   PROTECT_MODE_TIERS,
   selectFairSubMode,
   type FairSubMode,
@@ -70,6 +69,11 @@ export interface PlayerBet {
   autoCashOutTarget: number | null;
   /** CasinoTransaction id from the platform backend, for authenticated bets. Null for demo bets. */
   betId: string | null;
+  /** Game-session token this bet was placed with, for authenticated bets. Null for demo bets.
+   *  Held here (not just on the socket) so a server-resolved auto cash-out — which fires from
+   *  the tick loop, not a client request — can still settle against the platform later in the
+   *  round even if the original socket has since reconnected under a new socket.id. */
+  token: string | null;
 }
 
 function round2(n: number): number {
@@ -225,39 +229,46 @@ export class GameEngine extends EventEmitter {
    * Lock bets and pick this round's crash multiplier right before flight.
    *
    * Mode precedence (per the disclosed design — no RTP anywhere):
-   *   1. No real stake            → LURE (wide table; no money at risk)
-   *   2. Custom (forcedCrash set) → the exact multiplier the admin typed
-   *   3. Protect                  → fixed conservative two-tier table
-   *   4. Fair (default)           → reserve-driven Tight/Normal/Bonus table
+   *   1. Custom (forcedCrash set, AND a real bet to honor it) → the exact
+   *      multiplier the admin typed
+   *   2. Protect → fixed conservative two-tier table
+   *   3. Fair (default) → reserve-driven Tight/Normal/Bonus table
    *
-   * For every economy-active branch (2–4) the per-round payout ceiling is
-   * (reserve + this round's stake): the house can never pay out more than it
-   * holds plus what it just collected, which keeps the reserve solvent.
+   * Crash-point selection (1–3) runs identically whether or not anyone has
+   * real money on the line — an empty round animates exactly like a real
+   * one instead of the old separate wide 1x-100x "lure" table. That table
+   * regularly reached 50x-100x, which raced the multiplier number up while
+   * the flight-path curve — which saturates by ~10x, see
+   * progressFromMultiplier() on the frontend — sat visually frozen at the
+   * top of its arc for the extra seconds; looked like a glitch on every
+   * round nobody happened to be betting on.
+   *
+   * Only the ECONOMY is gated on real stake existing: with nobody's money
+   * at risk there's nothing to pay out, so the payout ceiling stays at 0
+   * and the reserve ledger isn't touched for that round (see
+   * settleBankroll). Custom mode also still only fires with a real bet to
+   * honor — it's a one-shot, and burning it on a round nobody bet on would
+   * waste the admin's forced crash for nothing.
    */
   private lockRoundAndSelectCrash(): void {
     this.roundRealStake = this.sumRealStake();
+    const hasRealStake = this.roundRealStake > 0;
 
-    // 1. Nobody has real money on the line — fly an enticing lure round.
-    //    This takes precedence over every admin mode: with zero stake there
-    //    is no bet to honor, so a Custom/Protect/Fair setting doesn't apply.
-    if (this.roundRealStake <= 0) {
-      this.crashPoint = generateWeightedCrash(Math.random, NO_BET_LURE_TIERS);
-      this.economyActiveForRound = false;
+    if (hasRealStake) {
+      // The reserve funds payouts; a round can never pay out more than the
+      // house holds plus what it just took this round.
+      this.roundMaxPayout = round2(this.bankroll + this.roundRealStake);
+      this.economyActiveForRound = true;
+    } else {
       this.roundMaxPayout = 0;
-      this.fairSubMode = null;
-      return;
+      this.economyActiveForRound = false;
     }
 
-    // The reserve funds payouts; a round can never pay out more than the
-    // house holds plus what it just took this round.
-    this.roundMaxPayout = round2(this.bankroll + this.roundRealStake);
-    this.economyActiveForRound = true;
-
-    // 2. Custom mode: honor the admin's exact fixed crash. One-shot — this
+    // 1. Custom mode: honor the admin's exact fixed crash. One-shot — this
     //    round is the one round Custom mode gets, so consume it immediately:
     //    the very next round already reverts to whatever mode was active
     //    before Custom was chosen, no manual admin action required.
-    if (this.overrides.forcedCrash !== null) {
+    if (hasRealStake && this.overrides.forcedCrash !== null) {
       this.crashPoint = round2(Math.min(this.overrides.forcedCrash, HARD_CAP_MULTIPLIER));
       this.fairSubMode = null;
       console.log(`[Economy][custom] stake=${this.roundRealStake} crash=${this.crashPoint}`);
@@ -269,29 +280,33 @@ export class GameEngine extends EventEmitter {
       return;
     }
 
-    // 3. Protect mode: fixed conservative two-tier table.
+    // 2. Protect mode: fixed conservative two-tier table.
     if (this.overrides.winMode === "protect") {
       this.crashPoint = round2(
         Math.min(generateWeightedCrash(Math.random, PROTECT_MODE_TIERS), HARD_CAP_MULTIPLIER),
       );
       this.fairSubMode = null;
-      console.log(
-        `[Economy][protect] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
-        `maxPayout=${this.roundMaxPayout} crash=${this.crashPoint}`,
-      );
+      if (hasRealStake) {
+        console.log(
+          `[Economy][protect] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
+          `maxPayout=${this.roundMaxPayout} crash=${this.crashPoint}`,
+        );
+      }
       return;
     }
 
-    // 4. Fair mode: sub-mode picked from the current reserve alone (never from
+    // 3. Fair mode: sub-mode picked from the current reserve alone (never from
     //    bet amounts) — a disclosed, uniform rule for everyone in the round.
     this.fairSubMode = selectFairSubMode(this.bankroll, Math.random);
     this.crashPoint = round2(
       Math.min(generateWeightedCrash(Math.random, fairTiersFor(this.fairSubMode)), HARD_CAP_MULTIPLIER),
     );
-    console.log(
-      `[Economy][fair:${this.fairSubMode}] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
-      `maxPayout=${this.roundMaxPayout} crash=${this.crashPoint}`,
-    );
+    if (hasRealStake) {
+      console.log(
+        `[Economy][fair:${this.fairSubMode}] reserve=${this.bankroll} stake=${this.roundRealStake} ` +
+        `maxPayout=${this.roundMaxPayout} crash=${this.crashPoint}`,
+      );
+    }
   }
 
   constructor() {
@@ -457,7 +472,11 @@ export class GameEngine extends EventEmitter {
       bet.cashedOutAt = bet.autoCashOutTarget;
       bet.win = win;
       if (this.economyActiveForRound) this.recordPaidOut(win);
-      this.emit("playerBet:autoCashedOut", { ...bet });
+      // Snapshot roundRecordId now — by the time an authenticated listener's
+      // await resolves, the engine may already be several ticks (or a whole
+      // round) further along and this.roundRecordId would no longer match
+      // the round this bet was actually placed and resolved in.
+      this.emit("playerBet:autoCashedOut", { ...bet, roundRecordId: this.roundRecordId });
     }
   }
 
@@ -522,6 +541,7 @@ export class GameEngine extends EventEmitter {
     userId?: string,
     autoCashOutTarget?: number | null,
     betId?: string,
+    token?: string,
   ): boolean {
     if (this.phase !== "betting") return false;
     if (amount <= 0) return false;
@@ -541,6 +561,7 @@ export class GameEngine extends EventEmitter {
       win: null,
       autoCashOutTarget: autoCashOutTarget ?? null,
       betId: betId ?? null,
+      token: token ?? null,
     });
     return true;
   }

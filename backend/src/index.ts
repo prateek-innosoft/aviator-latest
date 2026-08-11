@@ -169,23 +169,72 @@ function playerRoom(clientId: string): string {
 }
 
 // Server-resolved auto cash-out (see gameEngine.ts emitAutoCashouts()) — the
-// tick loop already marked the bet cashed out and recorded the payout; this
-// just credits the wallet and notifies the one socket that placed it. Only
-// the demo (unauthenticated) path is live traffic today — the authenticated
-// branch is a no-op here, matching that path being unreachable elsewhere.
+// tick loop already marked the bet cashed out (and, if this round is economy-
+// active, recorded the payout) the instant the live multiplier hit the
+// target. This settles the wallet side and notifies the one socket that
+// placed it, via its stable player room (survives a Socket.IO reconnect;
+// also targets the raw id for backwards compatibility with clients that
+// predate clientId).
 engine.on("playerBet:autoCashedOut", async (bet: {
   socketId: string; userId: string | null; panel: 0 | 1;
   cashedOutAt: number | null; win: number | null;
+  betId: string | null; token: string | null; roundRecordId: string;
 }) => {
-  if (bet.userId || bet.win == null) return;
-  const newBalance = await adjustDemoBalance(bet.win);
-  // Stable player rooms survive a Socket.IO reconnect. Also target the raw
-  // id for backwards compatibility with clients that predate clientId.
+  if (bet.win == null) return;
+
+  if (!bet.userId) {
+    // Demo path — shared wallet, credited directly.
+    const newBalance = await adjustDemoBalance(bet.win);
+    io.to(playerRoom(bet.socketId)).to(bet.socketId).emit("bet:cashedout", {
+      panel: bet.panel,
+      multiplier: bet.cashedOutAt,
+      win: bet.win,
+      balance: newBalance ?? undefined,
+    });
+    return;
+  }
+
+  // Authenticated path — settle against the real platform wallet. This bet
+  // was previously left uncredited here entirely (see PR history): the
+  // engine locked it as cashed out and booked it into the round's payout
+  // budget, but nothing ever told the platform, so a real player's win from
+  // Auto Cash Out was silently never paid — the stake stayed debited with no
+  // corresponding credit.
+  if (!bet.betId || !bet.token) {
+    console.error(
+      `[autoCashOut] authenticated bet missing betId/token, cannot settle — clientId=${bet.socketId} panel=${bet.panel} win=${bet.win}`,
+    );
+    return;
+  }
+  const result = await nestPost<{ success: boolean; data: { balance: number; win: number } }>(
+    "/aviator/bet/cashout",
+    bet.token,
+    { roundId: bet.roundRecordId, panel: bet.panel, betId: bet.betId, multiplier: bet.cashedOutAt },
+  );
+  if (!result.ok || !result.data?.data) {
+    console.error(
+      `[autoCashOut] platform settlement failed — clientId=${bet.socketId} panel=${bet.panel} betId=${bet.betId}: ${result.reason}`,
+    );
+    if (isSessionExpired(result)) {
+      // Token is dead for the rest of the session — no point retrying every
+      // tick with the same credentials. Tell the client so it falls back to
+      // demo mode; the bet stays resolved (locked) in-engine since the
+      // multiplier target has already passed.
+      io.to(playerRoom(bet.socketId)).to(bet.socketId).emit("auth:failed", { reason: "session_expired" });
+      return;
+    }
+    // Transient failure (network blip, platform 5xx) — undo the in-engine
+    // lock so the next tick's emitAutoCashouts() retries it, same as it
+    // would on the very first attempt.
+    engine.undoCashOut(bet.socketId, bet.panel);
+    return;
+  }
   io.to(playerRoom(bet.socketId)).to(bet.socketId).emit("bet:cashedout", {
     panel: bet.panel,
     multiplier: bet.cashedOutAt,
-    win: bet.win,
-    balance: newBalance ?? undefined,
+    win: result.data.data.win,
+    balance: result.data.data.balance,
+    betId: bet.betId,
   });
 });
 
@@ -324,7 +373,7 @@ io.on("connection", async (socket) => {
           return;
         }
         const { betId, balance } = result.data.data;
-        const placed = engine.placeBet(ownerId, panel, amount, authed.userId, autoCashOutTarget, betId);
+        const placed = engine.placeBet(ownerId, panel, amount, authed.userId, autoCashOutTarget, betId, authed.token);
         if (!placed) {
           // Engine rejected (e.g. phase moved on) — roll back the debit.
           await nestPost("/aviator/bet/cancel", authed.token, { roundId: engine.roundRecordId, panel, betId });
