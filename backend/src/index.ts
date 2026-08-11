@@ -215,22 +215,27 @@ engine.on("round:crashed", async (p) => {
   // Sync authoritative balance to every connected socket. The demo wallet
   // is shared across all unauthenticated sockets, so fetch it once.
   const sharedDemoBalance = await getDemoBalance();
-  for (const [sid, socket] of io.sockets.sockets) {
-    const authed = authedSockets.get(sid);
-    if (authed) {
-      // Authenticated user — fetch real wallet balance from the platform
-      // backend. This is an await, so the socket could re-identify as a
-      // DIFFERENT user (logout + login again) while it's in flight —
-      // re-check identity before emitting so a stale fetch for the OLD
-      // user can't land after and overwrite the new user's balance.
-      const realBalance = await getRealWalletBalance(authed.token);
-      if (realBalance !== null && authedSockets.get(sid)?.userId === authed.userId) {
-        socket.emit("balance:sync", { balance: realBalance });
+  // Fan the per-socket wallet lookups out in parallel — with many concurrent
+  // authenticated players a sequential await-per-socket loop here made
+  // balance:sync delivery time scale linearly with player count.
+  await Promise.all(
+    Array.from(io.sockets.sockets).map(async ([sid, socket]) => {
+      const authed = authedSockets.get(sid);
+      if (authed) {
+        // Authenticated user — fetch real wallet balance from the platform
+        // backend. This is an await, so the socket could re-identify as a
+        // DIFFERENT user (logout + login again) while it's in flight —
+        // re-check identity before emitting so a stale fetch for the OLD
+        // user can't land after and overwrite the new user's balance.
+        const realBalance = await getRealWalletBalance(authed.token);
+        if (realBalance !== null && authedSockets.get(sid)?.userId === authed.userId) {
+          socket.emit("balance:sync", { balance: realBalance });
+        }
+      } else if (!authFailedSockets.has(sid)) {
+        socket.emit("balance:sync", { balance: sharedDemoBalance });
       }
-    } else if (!authFailedSockets.has(sid)) {
-      socket.emit("balance:sync", { balance: sharedDemoBalance });
-    }
-  }
+    }),
+  );
 });
 
 io.on("connection", async (socket) => {

@@ -79,11 +79,22 @@ let initialized = false;
 // re-anchors us (correcting any drift), so the number stays authoritative but
 // climbs buttery-smooth at the screen's refresh rate on both the player page
 // and the admin panel (they share this store). MUST match the backend GROWTH.
+//
+// Extrapolation is capped to MAX_EXTRAPOLATION_MS past the last confirmed
+// tick. Previously this extrapolated off raw wall-clock time since flight
+// start with no cap at all — the server doesn't tell the client the crash
+// point in advance, so if "round:crashed" was delayed for any reason (socket
+// latency, a busy tick loop, a backgrounded tab), the display kept climbing
+// on pure exp(GROWTH·t) math with nothing to stop it, then snapped down hard
+// to the true value the moment the event finally landed (e.g. shooting to
+// 100x before settling at the real 70x crash). Capping the extrapolation
+// window bounds that overshoot to a couple of ticks' worth of growth —
+// imperceptible in normal play, and no runaway climb when a tick is late.
 const GROWTH = 0.16;
+const MAX_EXTRAPOLATION_MS = 150;
 let rafId: number | null = null;
 let anchorMult = 1.0;      // last server-confirmed multiplier
 let anchorAt = 0;          // performance.now() when that value was received
-let flightStartedAtServer: number | null = null;
 let serverClockOffsetMs: number | null = null; // server Date.now() - browser Date.now()
 
 function syncServerClock() {
@@ -109,15 +120,8 @@ function startMultiplierAnim() {
   const loop = () => {
     const s = useGame.getState();
     if (s.phase !== "flying") { rafId = null; return; }
-    const display = flightStartedAtServer != null && serverClockOffsetMs != null
-      ? Math.floor(
-          Math.exp(
-            GROWTH * Math.max(0, (Date.now() + serverClockOffsetMs - flightStartedAtServer) / 1000),
-          ) * 100,
-        ) / 100
-      : Math.floor(
-          anchorMult * Math.exp(GROWTH * Math.max(0, (performance.now() - anchorAt) / 1000)) * 100,
-        ) / 100;
+    const elapsedMs = Math.min(Math.max(0, performance.now() - anchorAt), MAX_EXTRAPOLATION_MS);
+    const display = Math.floor(anchorMult * Math.exp(GROWTH * (elapsedMs / 1000)) * 100) / 100;
     if (display !== s.multiplier) useGame.setState({ multiplier: display });
     rafId = requestAnimationFrame(loop);
   };
@@ -294,7 +298,6 @@ export const useGame = create<GameState>((set, get) => ({
         }
         // Reconnected mid-flight — anchor and start the smooth loop.
         if (st.phase === "flying") {
-          flightStartedAtServer = st.flightStartedAt;
           anchorMult = st.multiplier;
           anchorAt = performance.now();
           startMultiplierAnim();
@@ -304,7 +307,6 @@ export const useGame = create<GameState>((set, get) => ({
 
     socket.on("round:betting", (st: PublicRoundState) => {
       stopMultiplierAnim();
-      flightStartedAtServer = null;
       // Remember which panels wanted to bet this round (queued last round or auto).
       const prev = get().panels;
       const wantsBet = prev.map((p) => p.queued || p.autoBet);
@@ -365,7 +367,6 @@ export const useGame = create<GameState>((set, get) => ({
     );
 
     socket.on("round:flying", (st: PublicRoundState) => {
-      flightStartedAtServer = st.flightStartedAt;
       set({
         phase: "flying",
         multiplier: 1.0,
@@ -410,7 +411,6 @@ export const useGame = create<GameState>((set, get) => ({
       }) => {
         // Stop the smooth loop and snap to the authoritative crash value.
         stopMultiplierAnim();
-        flightStartedAtServer = null;
         set((s) => {
           const panels = s.panels.map((panel) => ({
             ...panel,
