@@ -350,6 +350,9 @@ export function GameCanvas() {
               alt="Aviator"
               className="w-[min(54vw,340px)] max-w-[74%] select-none object-contain"
               draggable={false}
+              loading="eager"
+              decoding="sync"
+              fetchPriority="high"
             />
             <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/55 sm:text-[12px]">
               Loading next round

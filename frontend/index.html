@@ -5,6 +5,10 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0e0e10" />
+    <!-- Shown every "betting" phase in GameCanvas — preload so it's already
+         decoded/cached the first time it mounts, instead of popping in a
+         beat after the surrounding text/progress bar. -->
+    <link rel="preload" as="image" href="/loading-logo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
