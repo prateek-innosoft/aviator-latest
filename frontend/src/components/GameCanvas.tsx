@@ -76,7 +76,7 @@ export function GameCanvas() {
   const bets = useGame((s) => s.bets);
   const lastWinToast = useGame((s) => s.lastWinToast);
   const { profile } = useAuth();
-  const isFunMode = !profile;
+  // const isFunMode = !profile;
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
