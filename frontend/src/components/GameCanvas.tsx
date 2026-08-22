@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { useGame } from "../store/gameStore";
-import { useAuth } from "../lib/authContext";
+// import { useAuth } from "../lib/authContext";
 import { Plane } from "../assets/plane";
 import { Avatar } from "./Avatar";
 
@@ -75,7 +75,7 @@ export function GameCanvas() {
   const crashFlash = useGame((s) => s.crashFlash);
   const bets = useGame((s) => s.bets);
   const lastWinToast = useGame((s) => s.lastWinToast);
-  const { profile } = useAuth();
+  // const { profile } = useAuth();
   // const isFunMode = !profile;
 
   const wrapRef = useRef<HTMLDivElement>(null);
