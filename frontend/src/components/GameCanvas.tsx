@@ -321,13 +321,13 @@ export function GameCanvas() {
       />
 
       {/* FUN MODE banner — only shown for unauthenticated/demo users */}
-      {isFunMode && (
+      {/* {isFunMode && (
         <div className="absolute left-0 right-0 top-0 z-20">
           <div className="mx-auto w-full bg-gradient-to-b from-[#d99719] to-[#c37a02] py-[3px] text-center text-[10px] font-semibold tracking-[0.16em] text-white/95 shadow-sm sm:text-[11px]">
             FUN MODE
           </div>
         </div>
-      )}
+      )} */}
 
       {/* Curve canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 z-10" />
